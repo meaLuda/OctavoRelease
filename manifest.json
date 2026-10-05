@@ -1,0 +1,11 @@
+{
+  "id": "octavo",
+  "name": "Octavo",
+  "version": "1.0.0",
+  "minAppVersion": "1.10.0",
+  "description": "Read EPUB and PDF books with highlights that live in your vault as linked Markdown.",
+  "author": "Munyala Eliud",
+  "authorUrl": "https://octavo.devformat.tools",
+  "fundingUrl": "https://octavo.devformat.tools/#pricing",
+  "isDesktopOnly": false
+}
