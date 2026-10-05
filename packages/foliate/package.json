@@ -1,0 +1,13 @@
+{
+  "name": "@octavo/foliate",
+  "version": "0.0.0-octavo",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./*.js": "./*.js"
+  },
+  "dependencies": {
+    "construct-style-sheets-polyfill": "^3.1.0"
+  }
+}

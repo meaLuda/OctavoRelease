@@ -1,0 +1,25 @@
+{
+  "name": "@octavo/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@octavo/foliate": "*",
+    "@octavo/shared": "*"
+  },
+  "devDependencies": {
+    "obsidian": "1.13.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "jsdom": "^26.0.0",
+    "@types/node": "^22.0.0"
+  },
+  "license": "AGPL-3.0-or-later"
+}

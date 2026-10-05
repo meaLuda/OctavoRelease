@@ -1,0 +1,418 @@
+/* Octavo — uses Obsidian CSS variables only; controls are opaque (never glass over text). */
+
+.octavo-view { padding: 0 !important; overflow: hidden; }
+.octavo-reader {
+  --octavo-bg: var(--background-primary);
+  --octavo-fg: var(--text-normal);
+  --octavo-chrome-bg: var(--octavo-bg);
+  --octavo-ease: cubic-bezier(.2, .7, .2, 1);
+  position: relative; height: 100%; width: 100%;
+  background: var(--octavo-bg); color: var(--octavo-fg);
+  outline: none; overflow: hidden;
+}
+.octavo-stage, .octavo-foliate { position: absolute; inset: 0; }
+.octavo-foliate { display: block; }
+.octavo-loading, .octavo-empty { padding: 2em; color: var(--text-muted); text-align: center; font-size: var(--font-ui-small); }
+
+/* ── top bar & footer ─────────────────────────────── */
+.octavo-topbar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; align-items: center; gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  padding-top: max(var(--size-4-1), env(safe-area-inset-top));
+  background: var(--octavo-chrome-bg); color: var(--octavo-fg);
+  border-bottom: 1px solid color-mix(in srgb, var(--octavo-fg) 12%, transparent);
+  transition: opacity 200ms var(--octavo-ease), transform 200ms var(--octavo-ease);
+}
+.octavo-topbar-group { display: flex; align-items: center; gap: 2px; }
+.octavo-title {
+  flex: 1; min-width: 0; text-align: center; font-size: var(--font-ui-small); color: color-mix(in srgb, var(--octavo-fg) 65%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.octavo-topbar .octavo-icon-btn { color: color-mix(in srgb, var(--octavo-fg) 70%, transparent); }
+.octavo-topbar .octavo-icon-btn:hover { color: var(--octavo-fg); background: color-mix(in srgb, var(--octavo-fg) 8%, transparent); }
+.octavo-icon-btn.is-active, .octavo-topbar .octavo-icon-btn.is-active { color: var(--interactive-accent); }
+/* chrome surfaces that use Obsidian's own colours must not inherit the page text colour */
+.octavo-panel, .octavo-popover, .octavo-back-chip { color: var(--text-normal); }
+.octavo-footer {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+  padding: 6px var(--size-4-4) max(6px, env(safe-area-inset-bottom));
+  pointer-events: none;
+}
+.octavo-footer-text {
+  pointer-events: auto; cursor: pointer; text-align: center;
+  font-size: var(--font-ui-smaller); color: color-mix(in srgb, var(--octavo-fg) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.octavo-progress {
+  height: 2px; margin: 0 auto 4px; max-width: 720px; border-radius: 1px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--octavo-fg) 45%, transparent) var(--octavo-progress, 0%), color-mix(in srgb, var(--octavo-fg) 10%, transparent) 0);
+}
+.octavo-footer-off .octavo-footer { display: none; }
+.octavo-chrome-hidden .octavo-topbar { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+.octavo-chrome-hidden .octavo-footer-text, .octavo-chrome-hidden .octavo-progress { opacity: .75; }
+
+/* edge arrows (desktop): appear when the pointer reaches the edge */
+.octavo-edge {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 4;
+  opacity: 0; transition: opacity 150ms var(--octavo-ease);
+}
+.octavo-edge-left { left: 6px; } .octavo-edge-right { right: 6px; }
+.octavo-edge-left-hot .octavo-edge-left, .octavo-edge-right-hot .octavo-edge-right { opacity: .8; }
+
+.octavo-back-chip {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: 6px; border-radius: 999px;
+  padding: 6px 14px; font-size: var(--font-ui-small);
+  background: var(--background-secondary); color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border); box-shadow: var(--shadow-s);
+}
+.octavo-back-icon { display: inline-flex; --icon-size: 14px; }
+
+/* ── selection popover ─────────────────────────────── */
+.octavo-popover {
+  position: absolute; z-index: 20;
+  background: var(--background-primary); border: 1px solid var(--background-modifier-border);
+  border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2); padding: 8px 10px;
+  animation: octavo-pop 140ms var(--octavo-ease);
+}
+@keyframes octavo-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } }
+.octavo-popover-colors { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 2px 2px 8px; }
+.octavo-reader button.octavo-swatch, .octavo-panel button.octavo-swatch {
+  width: 24px; height: 24px; min-width: 24px; padding: 0; border-radius: 50%; cursor: pointer;
+  border: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18);
+  transition: transform 120ms var(--octavo-ease);
+}
+.octavo-reader button.octavo-swatch:hover { transform: scale(1.12); }
+.octavo-reader button.octavo-swatch.is-active { box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--text-normal); }
+.octavo-popover-colors .octavo-icon-btn { width: 28px; height: 28px; border-radius: 50%; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.octavo-popover-tools { display: flex; justify-content: center; gap: 0; border-top: 1px solid var(--background-modifier-border); padding-top: 6px; }
+.octavo-reader button.octavo-tool {
+  display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 8px; min-width: 54px; height: auto;
+  background: transparent !important; box-shadow: none !important; border: none;
+  font-size: 11px; color: var(--text-muted); border-radius: 8px; --icon-size: 18px;
+}
+.octavo-reader button.octavo-tool:hover { color: var(--text-normal); background: var(--background-modifier-hover) !important; }
+.octavo-tool-label { line-height: 1.1; white-space: nowrap; }
+button.octavo-swatch-yellow, .octavo-swatch-yellow { background-color: #ffd60a !important; }
+button.octavo-swatch-green, .octavo-swatch-green { background-color: #5fd068 !important; }
+button.octavo-swatch-blue, .octavo-swatch-blue { background-color: #5ab0ff !important; }
+button.octavo-swatch-pink, .octavo-swatch-pink { background-color: #ff6fae !important; }
+button.octavo-swatch-purple, .octavo-swatch-purple { background-color: #b48cff !important; }
+
+/* ── side panel ─────────────────────────────── */
+.octavo-panel {
+  position: absolute; top: var(--octavo-topbar-h, 45px); right: 0; bottom: 0; z-index: 15; width: min(380px, 92%);
+  display: flex; flex-direction: column; background: var(--background-secondary);
+  border-left: 1px solid var(--background-modifier-border); box-shadow: var(--shadow-l);
+  animation: octavo-slide 180ms var(--octavo-ease);
+}
+@keyframes octavo-slide { from { transform: translateX(16px); opacity: 0; } }
+.octavo-panel-open .octavo-topbar { opacity: 1 !important; transform: none !important; pointer-events: auto !important; }
+.octavo-panel-header { display: flex; align-items: center; gap: 2px; padding: 6px; border-bottom: 1px solid var(--background-modifier-border); }
+.octavo-panel-spacer { flex: 1; }
+.octavo-panel-body { flex: 1; overflow-y: auto; padding: var(--size-4-3); -webkit-overflow-scrolling: touch; }
+
+.octavo-toc-item { padding: 6px 8px; border-radius: var(--radius-s); cursor: pointer; display: flex; gap: 8px; align-items: baseline; font-size: var(--font-ui-small); }
+.octavo-toc-item:hover { background: var(--background-modifier-hover); }
+.octavo-toc-item.is-active { color: var(--interactive-accent); font-weight: var(--font-semibold); }
+.octavo-toc-item.depth-1 { padding-left: 22px; } .octavo-toc-item.depth-2 { padding-left: 36px; } .octavo-toc-item.depth-3 { padding-left: 50px; }
+.octavo-toc-page { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.octavo-inline-icon { display: inline-flex; --icon-size: 14px; color: var(--text-muted); }
+
+.octavo-hl-filter { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.octavo-hl-filter input { width: 100%; }
+.octavo-hl-chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.octavo-panel button.octavo-swatch { width: 20px; height: 20px; min-width: 20px; }
+.octavo-chip { font-size: var(--font-ui-smaller); padding: 2px 10px; border-radius: 999px; }
+.octavo-chip.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.octavo-hl-card {
+  border-left: 3px solid var(--c, #ffd60a); padding: 8px 10px; margin-bottom: 8px; cursor: pointer;
+  background: var(--background-primary); border-radius: var(--radius-s);
+}
+.octavo-hl-card:hover { background: var(--background-modifier-hover); }
+.octavo-hl-yellow { --c: #ffd60a; } .octavo-hl-green { --c: #5fd068; } .octavo-hl-blue { --c: #5ab0ff; } .octavo-hl-pink { --c: #ff6fae; } .octavo-hl-purple { --c: #b48cff; }
+.octavo-hl-label { font-size: var(--font-ui-smaller); color: var(--text-faint); margin-bottom: 2px; }
+.octavo-hl-quote { font-size: var(--font-ui-small); line-height: 1.45; }
+.octavo-hl-quote.is-collapsed { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.octavo-hl-note { font-size: var(--font-ui-small); color: var(--text-muted); margin-top: 6px; font-style: italic; }
+
+.octavo-search-input { width: 100%; margin-bottom: 8px; }
+.octavo-search-status { font-size: var(--font-ui-smaller); color: var(--text-faint); margin-bottom: 6px; }
+.octavo-search-section { font-size: var(--font-ui-smaller); color: var(--text-muted); margin: 10px 0 4px; font-weight: var(--font-semibold); }
+.octavo-search-hit { font-size: var(--font-ui-small); padding: 6px 8px; border-radius: var(--radius-s); cursor: pointer; line-height: 1.4; }
+.octavo-search-hit:hover { background: var(--background-modifier-hover); }
+.octavo-search-hit mark { background: color-mix(in srgb, #ffd60a 55%, transparent); color: inherit; border-radius: 2px; }
+
+/* appearance */
+.octavo-ap-section { margin-bottom: var(--size-4-4); }
+.octavo-ap-title { font-size: var(--font-ui-smaller); text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); margin: 8px 0 8px; }
+.octavo-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.octavo-theme-swatch {
+  background-color: var(--sw-bg) !important; color: var(--sw-fg) !important;
+  height: 72px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  border-radius: var(--radius-m); border: 2px solid var(--background-modifier-border); box-shadow: none; cursor: pointer;
+}
+.octavo-theme-swatch.is-active { border-color: var(--interactive-accent); }
+.octavo-theme-aa { font-size: 20px; font-family: Georgia, serif; }
+.octavo-theme-name { font-size: 11px; opacity: .8; }
+.octavo-ap-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; }
+.octavo-ap-label { font-size: var(--font-ui-small); }
+.octavo-ap-control { display: flex; align-items: center; gap: 6px; }
+.octavo-ap-value { font-size: var(--font-ui-smaller); color: var(--text-muted); min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+.octavo-seg { display: inline-flex; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); overflow: hidden; align-items: center; }
+.octavo-seg button { border-radius: 0; box-shadow: none; background: transparent; font-size: var(--font-ui-smaller); padding: 4px 10px; }
+.octavo-seg button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.octavo-ap-reset { margin-top: 8px; }
+
+/* book map */
+.octavo-map-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; cursor: pointer; }
+.octavo-map-label { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.octavo-map-bar { grid-column: 1; height: 6px; width: min(100%, var(--w)); border-radius: 3px; background: var(--background-modifier-border); }
+.octavo-map-bar.is-read { background: color-mix(in srgb, var(--interactive-accent) 55%, transparent); }
+.octavo-map-bar.is-current { background: linear-gradient(to right, var(--interactive-accent) var(--p), var(--background-modifier-border) 0); }
+.octavo-map-count { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: var(--font-ui-smaller); background: #ffd60a55; border-radius: 8px; padding: 0 6px; }
+
+.octavo-hover-target { position: absolute; pointer-events: none; z-index: 1; }
+
+/* ── PDF (pdf.js PDFViewer; Obsidian ships the viewer CSS) ─────────────────────────────── */
+.octavo-pdf { background: var(--background-secondary); }
+.octavo-pdf-container { position: absolute; inset: 0; overflow: auto; padding-top: 48px; padding-bottom: 40px; -webkit-overflow-scrolling: touch; }
+.octavo-pdf .pdfViewer .page { box-shadow: var(--shadow-s); border: none; margin: 12px auto; }
+.octavo-pdf .pdfViewer.removePageBorders .page { margin: 12px auto; }
+.octavo-pdf .pdfViewer .spread .page { margin: 12px 8px; }
+.octavo-pdf .textLayer { -webkit-user-select: text !important; user-select: text !important; }
+.octavo-pdf .textLayer ::selection { background: rgba(0, 120, 255, .28); }
+/* scanned pages are images: pageColors can't recolour them, so invert them in dark mode */
+.octavo-dark[data-pdf-dark="invert-except-images"] .page.is-scanned canvas { filter: invert(.88) hue-rotate(180deg); }
+.octavo-dark[data-pdf-dark="sepia"] .page.is-scanned canvas { filter: invert(.85) sepia(.4) hue-rotate(180deg); }
+.octavo-pdf-hl { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.octavo-pdf-hlmark { position: absolute; pointer-events: auto; cursor: pointer; background: var(--c); opacity: .38; mix-blend-mode: multiply; border-radius: 3px; }
+.octavo-dark .octavo-pdf-hlmark { mix-blend-mode: screen; opacity: .45; }
+.octavo-pdf-hlmark.is-underline { background: none; opacity: 1; border-bottom: 2.5px solid var(--c); }
+.octavo-pdf-hlmark.is-backlink { background: none; opacity: .9; border-bottom: 2px dotted var(--c); }
+.octavo-pdf-flash { position: absolute; background: rgba(255, 196, 0, .55); border-radius: 2px; animation: octavo-flash 2.2s ease-out forwards; }
+@keyframes octavo-flash { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+.octavo-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
+.octavo-thumb { cursor: pointer; text-align: center; }
+.octavo-thumb canvas { width: 100%; background: #fff; box-shadow: var(--shadow-s); border: 2px solid transparent; border-radius: 2px; }
+.octavo-thumb.is-current canvas { border-color: var(--interactive-accent); }
+.octavo-thumb-n { font-size: var(--font-ui-smaller); color: var(--text-faint); }
+
+/* ── shelf (Bases view) ─────────────────────────────── */
+.octavo-shelf { padding: var(--size-4-4); }
+.octavo-shelf-head { display: flex; align-items: center; gap: 10px; margin-bottom: var(--size-4-4); cursor: pointer; }
+.octavo-goal-ring {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: conic-gradient(var(--interactive-accent) calc(var(--p) * 360deg), var(--background-modifier-border) 0);
+  -webkit-mask: radial-gradient(circle, transparent 52%, #000 54%); mask: radial-gradient(circle, transparent 52%, #000 54%);
+}
+.octavo-goal-text { font-size: var(--font-ui-small); color: var(--text-muted); }
+.octavo-shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 22px 18px; }
+.octavo-book-card { cursor: pointer; outline: none; }
+.octavo-book-card:focus-visible .octavo-book-cover { box-shadow: 0 0 0 2px var(--interactive-accent); }
+.octavo-book-cover {
+  position: relative; aspect-ratio: 2 / 3; border-radius: 3px 6px 6px 3px; overflow: hidden;
+  background: var(--background-secondary); box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 6px 16px rgba(0,0,0,.12);
+  transition: transform 160ms var(--octavo-ease);
+}
+.octavo-book-card:hover .octavo-book-cover { transform: translateY(-2px); }
+.octavo-book-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.octavo-book-cover.is-placeholder { display: flex; align-items: center; justify-content: center; padding: 12px; background: linear-gradient(160deg, var(--background-modifier-border), var(--background-secondary)); }
+.octavo-book-cover-title { font-family: Georgia, serif; font-size: 15px; text-align: center; line-height: 1.25; color: var(--text-muted); }
+.octavo-book-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(to right, var(--interactive-accent) var(--p), rgba(0,0,0,.25) 0); }
+.octavo-book-badge { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: var(--interactive-accent); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; --icon-size: 14px; }
+.octavo-book-title { margin-top: 8px; font-size: var(--font-ui-small); font-weight: var(--font-semibold); line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.octavo-book-meta { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── book-note callouts ─────────────────────────────── */
+.callout[data-callout^="octavo-"] { --callout-icon: lucide-highlighter; background: color-mix(in srgb, rgb(var(--callout-color)) 12%, transparent); }
+.callout[data-callout="octavo-yellow"] { --callout-color: 230, 180, 0; }
+.callout[data-callout="octavo-green"] { --callout-color: 70, 170, 80; }
+.callout[data-callout="octavo-blue"] { --callout-color: 60, 140, 230; }
+.callout[data-callout="octavo-pink"] { --callout-color: 230, 80, 150; }
+.callout[data-callout="octavo-purple"] { --callout-color: 150, 110, 230; }
+
+/* ── settings, modals, status ─────────────────────────────── */
+.octavo-tapzone-editor { padding: 8px 0 16px; }
+.octavo-tapzone-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-width: 480px; margin-top: 8px; }
+.octavo-prompt { width: 100%; min-height: 90px; resize: vertical; }
+.octavo-md-modal { max-height: 60vh; overflow-y: auto; user-select: text; }
+.octavo-status { cursor: pointer; }
+
+/* ── mobile ─────────────────────────────── */
+.is-mobile .octavo-icon-btn { min-width: 44px; min-height: 44px; }
+.is-mobile .octavo-panel { width: 100%; }
+.is-mobile .octavo-tool { min-height: 44px; min-width: 56px; }
+.is-mobile .octavo-swatch { width: 32px; height: 32px; min-width: 32px; }
+.is-mobile .octavo-pdf-container { padding-top: 44px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .octavo-reader *, .octavo-shelf * { animation: none !important; transition: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .octavo-popover, .octavo-panel { box-shadow: none; }
+}
+
+/* ── Library view ─────────────────────────────── */
+.octavo-library { padding: 0 !important; }
+.octavo-lib { max-width: 1280px; margin: 0 auto; padding: var(--size-4-8) var(--size-4-8) var(--size-4-12); }
+.octavo-lib-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--size-4-4); flex-wrap: wrap; margin-bottom: var(--size-4-6); }
+.octavo-lib-title { margin: 0; font-size: 2em; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+.octavo-lib-count { color: var(--text-muted); font-size: var(--font-ui-small); margin-top: 2px; }
+.octavo-lib-tools { display: flex; align-items: center; gap: var(--size-4-2); flex-wrap: wrap; }
+.octavo-lib-search { width: 240px; }
+.octavo-lib-section { font-size: var(--font-ui-small); font-weight: var(--font-semibold); color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 var(--size-4-3); }
+
+.octavo-lib-continue { margin-bottom: var(--size-4-8); }
+.octavo-lib-continue-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--size-4-4); }
+.octavo-lib-hero {
+  display: flex; gap: var(--size-4-4); padding: var(--size-4-4); border-radius: var(--radius-l); cursor: pointer;
+  background: var(--background-secondary); border: 1px solid var(--background-modifier-border);
+  transition: border-color 150ms ease, transform 150ms ease;
+}
+.octavo-lib-hero:hover { border-color: var(--background-modifier-border-hover); transform: translateY(-1px); }
+.octavo-lib-hero-cover { position: relative; flex: none; width: 84px; aspect-ratio: 2 / 3; border-radius: 3px 5px 5px 3px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
+.octavo-lib-hero-cover img { width: 100%; height: 100%; object-fit: cover; }
+.octavo-lib-hero-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.octavo-lib-hero-title { font-weight: var(--font-semibold); line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.octavo-lib-hero-author, .octavo-lib-hero-meta { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.octavo-lib-hero-info .mod-cta { align-self: flex-start; margin-top: auto; }
+.octavo-lib-bar { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--interactive-accent) var(--p), var(--background-modifier-border) 0); margin-top: 6px; }
+.octavo-lib-bar.is-overlay { position: absolute; left: 6px; right: 6px; bottom: 6px; margin: 0; background: linear-gradient(to right, var(--interactive-accent) var(--p), rgba(0,0,0,.35) 0); }
+
+.octavo-lib-chips { display: flex; gap: var(--size-4-2); flex-wrap: wrap; margin-bottom: var(--size-4-6); }
+.octavo-lib .octavo-lib-chip {
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 12px; height: auto;
+  background: transparent; box-shadow: none; border: 1px solid var(--background-modifier-border); font-size: var(--font-ui-small);
+}
+.octavo-lib .octavo-lib-chip:hover { background: var(--background-modifier-hover); }
+.octavo-lib .octavo-lib-chip.is-active { background: var(--text-normal); color: var(--background-primary); border-color: var(--text-normal); }
+.octavo-lib-chip-n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.octavo-lib-chip.is-active .octavo-lib-chip-n { color: inherit; opacity: .6; }
+.octavo-lib-chip-icon { display: inline-flex; --icon-size: 14px; }
+.octavo-lib .octavo-lib-chip.is-ghost { border-style: dashed; padding: 4px 8px; color: var(--text-muted); }
+
+.octavo-lib-grid.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 150px), 1fr)); gap: 28px 22px; }
+.octavo-lib-card { cursor: pointer; outline: none; min-width: 0; }
+.octavo-lib-cover {
+  position: relative; aspect-ratio: 2 / 3; border-radius: 3px 6px 6px 3px; overflow: hidden;
+  background: var(--background-secondary);
+  box-shadow: 0 1px 2px rgba(0,0,0,.14), 0 8px 20px -6px rgba(0,0,0,.35);
+  transition: transform 180ms cubic-bezier(.2,.7,.2,1), box-shadow 180ms ease;
+}
+.octavo-lib-cover::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 6px; background: linear-gradient(to right, rgba(0,0,0,.18), transparent); pointer-events: none; }
+.octavo-lib-card:hover .octavo-lib-cover, .octavo-lib-card:focus-visible .octavo-lib-cover { transform: translateY(-3px); box-shadow: 0 2px 4px rgba(0,0,0,.14), 0 14px 28px -8px rgba(0,0,0,.45); }
+.octavo-lib-card:focus-visible .octavo-lib-cover { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.octavo-lib-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.octavo-lib-cover.is-placeholder, .octavo-lib-hero-cover.is-placeholder {
+  display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 14px;
+  background: linear-gradient(155deg, hsl(var(--hue) 32% 38%), hsl(calc(var(--hue) + 30) 30% 22%));
+  color: rgba(255,255,255,.92);
+}
+.octavo-lib-ph-title { font-family: Georgia, 'Iowan Old Style', serif; font-size: 15px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.octavo-lib-ph-author { font-size: 11px; opacity: .75; text-transform: uppercase; letter-spacing: .05em; }
+.octavo-lib-badge { position: absolute; top: 8px; left: 10px; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--interactive-accent); color: var(--text-on-accent); --icon-size: 14px; }
+.octavo-lib-cloud { position: absolute; top: 8px; left: 10px; color: #fff; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); --icon-size: 16px; }
+.octavo-lib .octavo-lib-more {
+  position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 120ms ease;
+  background: rgba(0,0,0,.55) !important; color: #fff; border-radius: 50%; width: 28px; height: 28px; padding: 0;
+}
+.octavo-lib-card:hover .octavo-lib-more, .octavo-lib-card:focus-within .octavo-lib-more, .is-mobile .octavo-lib .octavo-lib-more { opacity: 1; }
+.octavo-lib-info { padding-top: 10px; }
+.octavo-lib-card-title { font-size: var(--font-ui-small); font-weight: var(--font-semibold); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.octavo-lib-card-meta { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.octavo-lib-grid.is-list { display: flex; flex-direction: column; }
+.octavo-lib-grid.is-list .octavo-lib-card { display: flex; align-items: center; gap: var(--size-4-4); padding: 8px; border-radius: var(--radius-m); }
+.octavo-lib-grid.is-list .octavo-lib-card:hover { background: var(--background-modifier-hover); }
+.octavo-lib-grid.is-list .octavo-lib-cover { width: 44px; flex: none; }
+.octavo-lib-grid.is-list .octavo-lib-ph-title, .octavo-lib-grid.is-list .octavo-lib-ph-author, .octavo-lib-grid.is-list .octavo-lib-more { display: none; }
+.octavo-lib-grid.is-list .octavo-lib-info { padding: 0; }
+.octavo-lib-zoom { position: sticky; bottom: 12px; float: right; display: flex; gap: 2px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 999px; padding: 2px; margin-top: 16px; }
+.is-mobile .octavo-lib { padding: var(--size-4-4); }
+.is-mobile .octavo-lib-search { width: 100%; }
+.is-phone .octavo-lib-grid.is-grid { grid-template-columns: repeat(auto-fill, minmax(min(var(--card), 42vw), 1fr)); gap: 20px 14px; }
+.octavo-pdf .octavo-footer { background: var(--background-secondary); border-top: 1px solid var(--background-modifier-border); padding-top: 4px; }
+.octavo-pdf .octavo-footer-text { color: var(--text-muted); }
+.octavo-pdf .octavo-progress { background: linear-gradient(to right, var(--interactive-accent) var(--octavo-progress, 0%), var(--background-modifier-border) 0); }
+.octavo-pdf .octavo-topbar { background: var(--background-secondary); color: var(--text-normal); border-bottom-color: var(--background-modifier-border); }
+.octavo-pdf .octavo-topbar .octavo-icon-btn, .octavo-pdf .octavo-title { color: var(--text-muted); }
+
+
+/* ── mobile: chrome-free reading ─────────────────────────────── */
+.is-mobile .workspace-leaf-content[data-type="octavo-epub"] > .view-header,
+.is-mobile .workspace-leaf-content[data-type="octavo-pdf"] > .view-header { display: none; }
+.is-mobile .mobile-navbar { transition: transform 220ms cubic-bezier(.2,.7,.2,1), opacity 220ms ease; }
+body.octavo-immersive .mobile-navbar { transform: translateY(140%); opacity: 0; pointer-events: none; }
+.is-mobile .octavo-topbar { padding-top: max(6px, env(safe-area-inset-top)); }
+
+/* ── focus mode: everything but the reading pane hidden; overlays still work ─────────────── */
+body.octavo-focus .workspace-ribbon,
+body.octavo-focus .workspace-split.mod-left-split,
+body.octavo-focus .workspace-split.mod-right-split,
+body.octavo-focus .workspace-split.mod-root .workspace-tab-header-container,
+body.octavo-focus .status-bar,
+body.octavo-focus .titlebar,
+body.octavo-focus .mobile-navbar,
+body.octavo-focus .workspace-leaf-content[data-type^="octavo-"] > .view-header { display: none !important; }
+body.octavo-focus .workspace-split.mod-root { --tab-container-background: transparent; }
+body.octavo-focus .app-container, body.octavo-focus .horizontal-main-container { padding-top: 0 !important; }
+
+/* ── PDF Text view: reflowed text in the reader's theme ─────────────────────────────── */
+.octavo-pdf-textview {
+  position: absolute; inset: 0; overflow-y: auto; padding: 64px 20px 72px;
+  background: var(--tv-bg); color: var(--tv-fg); -webkit-overflow-scrolling: touch;
+}
+.octavo-pdf.is-textview { background: var(--tv-bg); }
+.octavo-reflow { max-width: var(--tv-measure, 36em); margin: 0 auto; font-family: var(--tv-font); font-size: var(--tv-size, 1.15em); line-height: var(--tv-lh, 1.55); }
+.octavo-reflow p { margin: 0 0 .85em; text-align: var(--tv-align, justify); hyphens: var(--tv-hyphens, auto); -webkit-hyphens: var(--tv-hyphens, auto); user-select: text; }
+.octavo-reflow h3 { font-family: inherit; font-size: 1.3em; line-height: 1.25; margin: 1.6em 0 .6em; color: inherit; }
+.octavo-reflow-pagenum { text-align: center; font: 11px/1 var(--font-interface); color: color-mix(in srgb, var(--tv-fg) 35%, transparent); margin: 1.6em 0 1.2em; letter-spacing: .08em; }
+.octavo-reflow-pagenum::before, .octavo-reflow-pagenum::after { content: ' — '; }
+.octavo-reflow-empty { font: italic .85em/1.4 var(--font-interface); color: color-mix(in srgb, var(--tv-fg) 55%, transparent); text-align: center; margin: 1em 0 2em; }
+.is-mobile .octavo-pdf-textview { padding: 52px 18px 60px; }
+.octavo-reflow-figure { margin: 1.2em auto; text-align: center; }
+.octavo-reflow-figure img { max-width: 100%; height: auto; border-radius: 4px; }
+.theme-dark .is-textview .octavo-reflow-figure img.is-lineart { filter: invert(.88) hue-rotate(180deg); }
+.theme-dark .is-textview .octavo-reflow-figure img.is-photo { filter: brightness(.9); }
+
+/* Library adapts to its pane width (split panes, phones, narrow windows) */
+.octavo-library { container-type: inline-size; }
+.octavo-lib-tools { min-width: 0; }
+.octavo-lib-search { flex: 1 1 140px; min-width: 0; width: auto; max-width: 240px; }
+@container (max-width: 560px) {
+  .octavo-lib { padding: 14px 12px 40px; }
+  .octavo-lib-head { flex-direction: column; align-items: stretch; }
+  .octavo-lib-tools { width: 100%; }
+  .octavo-lib-search { max-width: none; }
+  .octavo-lib-tools .dropdown { flex: 1 1 110px; min-width: 0; }
+  .octavo-lib-title { font-size: 1.6em; }
+  .octavo-lib-continue-row { grid-template-columns: minmax(0, 1fr); }
+  .octavo-lib-hero { min-width: 0; padding: 12px; gap: 12px; }
+  .octavo-lib-hero-info { min-width: 0; }
+  .octavo-lib-hero-cover { width: 64px; }
+  .octavo-lib-grid.is-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 18px 12px; }
+}
+@container (max-width: 260px) {
+  .octavo-lib-add { width: 100%; }
+  .octavo-lib-hero { flex-direction: column; }
+  .octavo-lib-hero-cover { width: 56px; }
+  .octavo-lib-grid.is-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* Sign-in dialog */
+.octavo-signin { width: min(420px, 92vw); }
+.octavo-signin-lede { color: var(--text-muted); margin: 0 0 var(--size-4-4); }
+.octavo-signin-form { display: flex; flex-direction: column; gap: var(--size-4-3); }
+.octavo-signin-form input { width: 100%; height: 40px; font-size: var(--font-ui-medium); }
+.octavo-signin-form button { width: 100%; height: 40px; }
+.octavo-signin-code { text-align: center; letter-spacing: .4em; font-variant-numeric: tabular-nums; font-size: 22px !important; height: 48px !important; }
+.octavo-signin-err { color: var(--text-error); font-size: var(--font-ui-small); margin-top: var(--size-4-2); }
+.octavo-signin-err:empty { display: none; }
+.octavo-signin-links { display: flex; justify-content: space-between; margin-top: var(--size-4-3); font-size: var(--font-ui-small); }
+.octavo-signin-done { text-align: center; }
+.octavo-signin-done p { margin: var(--size-4-1) 0; }
+.octavo-signin-tick { width: 48px; height: 48px; margin: 0 auto var(--size-4-3); border-radius: 50%; display: grid; place-items: center; background: var(--color-green); color: #fff; }
+.octavo-signin-tick svg { width: 26px; height: 26px; }
+.octavo-signin-plan { font-weight: var(--font-semibold); font-size: var(--font-ui-medium); }
