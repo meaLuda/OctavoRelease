@@ -8,7 +8,7 @@ import {
   type Highlight, type HighlightColor, type ParsedHighlight, tidyTitle } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import { BOOK_EXTENSIONS, type Backlink } from '../library/BookLibrary'
-import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, type PanelTab } from '../reader/ui'
+import { ReaderChrome, SelectionPopover, SidePanel, el, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook } from '../reader/appearance'
 import { bookCss } from '../reader/themes'
 import { sanitizeSection, indexText, rangeFromOffsets, rangeRectInHost, hasSelection, offsetOf } from '../reader/dom'
@@ -686,9 +686,9 @@ export class EpubView extends FileView {
       const dy = ((t - last) / 1000) * this.plugin.settings.autoScrollSpeed
       last = t
       this.foliate?.renderer?.scrollBy?.(0, dy)
-      this.autoScroll = requestAnimationFrame(step)
+      this.autoScroll = window.requestAnimationFrame(step)
     }
-    this.autoScroll = requestAnimationFrame(step)
+    this.autoScroll = window.requestAnimationFrame(step)
     new Notice('Auto-scroll on — press Esc to stop')
   }
   private stopAutoScroll() { if (this.autoScroll) cancelAnimationFrame(this.autoScroll); this.autoScroll = 0 }

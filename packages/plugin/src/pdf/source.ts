@@ -7,9 +7,6 @@
 /** Assets Obsidian bundles with its pdf.js: CJK cmaps, standard fonts, JPX/JBIG2 decoders. */
 export const PDF_ASSETS = { cMapUrl: '/lib/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: '/lib/pdfjs/standard_fonts/', wasmUrl: '/lib/pdfjs/wasm/', iccUrl: '/lib/pdfjs/iccs/' }
 
-/** Obsidian's own pdf.js viewer module (shipped inside the app, never fetched from the network). A computed
- *  specifier keeps the bundler from rewriting this native import(). */
-const VIEWER_MODULE = ['/lib', 'pdfjs', 'pdf.viewer.min.mjs'].join('/')
 
 /**
  * pdf.js core + viewer components bundled with Obsidian. `loadPdfJs()` only loads the
@@ -19,7 +16,9 @@ const VIEWER_MODULE = ['/lib', 'pdfjs', 'pdf.viewer.min.mjs'].join('/')
 export async function ensurePdfjs(loadPdfJs: () => Promise<any>): Promise<{ lib: any; viewer: any }> {
   const lib = await loadPdfJs()
   let mod: any = null
-  if (!(window as any).pdfjsViewer) mod = await import(VIEWER_MODULE)
+  // Obsidian's own pdf.js viewer module, shipped inside the app (never fetched from the network).
+  // @ts-expect-error -- served by Obsidian at runtime; marked external in esbuild.config.mjs, so it has no type declarations
+  if (!(window as any).pdfjsViewer) mod = await import('/lib/pdfjs/pdf.viewer.min.mjs')
   return { lib, viewer: (window as any).pdfjsViewer ?? mod }
 }
 

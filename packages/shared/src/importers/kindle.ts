@@ -6,11 +6,13 @@ import { importId, toIso, type ImportedBook } from './types'
  *   Title (Author)\n- <kind> … | … | <date>\n\n<text>
  * Notes attach to the highlight at the same/overlapping location.
  */
+const BOM = new RegExp('^' + String.fromCharCode(0xfeff))
+
 export function importKindle(txt: string): ImportedBook[] {
   const books = new Map<string, ImportedBook>()
   const pendingNotes: Array<{ key: string; loc: string; text: string }> = []
-  for (const raw of txt.replace(/\r/g, '').replace(/^﻿/, '').split(/^==========\s*$/m)) {
-    const lines = raw.split('\n').map(l => l.replace(/^﻿/, '')).filter((l, i, a) => !(i === 0 && l.trim() === '' && a.length > 1))
+  for (const raw of txt.replace(/\r/g, '').replace(BOM, '').split(/^==========\s*$/m)) {
+    const lines = raw.split('\n').map(l => l.replace(BOM, '')).filter((l, i, a) => !(i === 0 && l.trim() === '' && a.length > 1))
     while (lines.length && !lines[0]!.trim()) lines.shift()
     if (lines.length < 3) continue
     const head = lines[0]!.trim()

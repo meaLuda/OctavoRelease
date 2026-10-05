@@ -590,7 +590,7 @@ export class PdfView extends FileView {
     for (let n = 1; n <= this.doc.numPages; n++) {
       const sec = el('section', 'octavo-reflow-page', article)
       sec.dataset.page = String(n)
-      sec.style.minHeight = '40vh'
+      sec.addClass('octavo-reflow-pending')
       this.textIO.observe(sec)
     }
   }
@@ -605,7 +605,7 @@ export class PdfView extends FileView {
     }
     const blocks = reflow(raw)
     const vp1 = page.getViewport({ scale: 1 })
-    sec.style.minHeight = ''
+    sec.removeClass('octavo-reflow-pending')
     const marker = el('div', 'octavo-reflow-pagenum', sec, String(n))
     marker.setAttribute('aria-label', `Page ${n}`)
     // figures: blank-of-text bands that contain ink, cropped from a rendered page

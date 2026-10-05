@@ -416,3 +416,4 @@ body.octavo-focus .app-container, body.octavo-focus .horizontal-main-container {
 .octavo-signin-tick { width: 48px; height: 48px; margin: 0 auto var(--size-4-3); border-radius: 50%; display: grid; place-items: center; background: var(--color-green); color: #fff; }
 .octavo-signin-tick svg { width: 26px; height: 26px; }
 .octavo-signin-plan { font-weight: var(--font-semibold); font-size: var(--font-ui-medium); }
+.octavo-reflow-pending { min-height: 40vh; }

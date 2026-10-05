@@ -135,7 +135,7 @@ export default class OctavoPlugin extends Plugin {
     this.addCommand({ id: 'open-library-base', name: 'Open library as a Base (table / custom views)', callback: () => void this.openLibraryBase() })
     this.addCommand({ id: 'import-highlights', name: 'Import highlights from another reader…', callback: () => new ImportModal(this.app, this).open() })
     this.addCommand({
-      id: 'open-current-in-octavo', name: 'Open current file in Octavo',
+      id: 'open-current-file', name: 'Open current file as a book',
       checkCallback: checking => {
         const f = this.app.workspace.getActiveFile()
         if (!isBookFile(f)) return false
@@ -173,8 +173,8 @@ export default class OctavoPlugin extends Plugin {
     })
     this.addCommand({ id: 'reading-goal', name: 'Show reading goal and streak', callback: () => this.showGoal() })
     this.addCommand({ id: 'year-in-review', name: 'Write my year in review', callback: () => void this.yearInReview() })
-    this.addCommand({ id: 'cloud-sign-in', name: 'Sign in to Octavo Cloud', callback: () => void this.cloud.signIn() })
-    this.addCommand({ id: 'cloud-library', name: 'Browse Octavo Cloud library', callback: () => void this.cloud.browse() })
+    this.addCommand({ id: 'cloud-sign-in', name: 'Sign in to cloud', callback: () => void this.cloud.signIn() })
+    this.addCommand({ id: 'cloud-library', name: 'Browse cloud library', callback: () => void this.cloud.browse() })
   }
 
   async openLibrary() {
@@ -211,7 +211,7 @@ export default class OctavoPlugin extends Plugin {
         const en = res.status === 200 ? (res.json?.en ?? []) : []
         defn = en.slice(0, 2).map((p: any) => `*${p.partOfSpeech}* — ${(p.definitions?.[0]?.definition ?? '').replace(/<[^>]+>/g, '')}`).join('\n\n')
       }
-    } catch (e) { defn = '' }
+    } catch { defn = '' }
     modal.setMarkdown(defn || `No definition found for **${word}**. Set up an AI provider in settings for context-aware definitions.`)
   }
 
@@ -219,9 +219,9 @@ export default class OctavoPlugin extends Plugin {
   private async saveVocabulary(word: string, defn: string, context: string) {
     const path = normalizePath(`${this.settings.booksFolder || 'Books'}/Vocabulary.md`)
     let f = this.app.vault.getAbstractFileByPath(path)
-    if (!(f instanceof TFile)) f = await this.app.vault.create(path, '---\ntags:\n  - flashcards\n---\n# Vocabulary\n\n')
+    const vocab = f instanceof TFile ? f : await this.app.vault.create(path, '---\ntags:\n  - flashcards\n---\n# Vocabulary\n\n')
     const plain = defn.replace(/\n+/g, ' ').replace(/\*/g, '')
-    await this.app.vault.append(f as TFile, `${word}::${plain}\n> ${context.replace(/\n+/g, ' ').slice(0, 300)}\n\n`)
+    await this.app.vault.append(vocab, `${word}::${plain}\n> ${context.replace(/\n+/g, ' ').slice(0, 300)}\n\n`)
     new Notice(`Saved “${word}” to vocabulary`)
   }
 

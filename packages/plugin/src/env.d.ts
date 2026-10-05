@@ -4,3 +4,4 @@ declare module '@octavo/foliate/*.js' {
   const anything: any
   export = anything
 }
+

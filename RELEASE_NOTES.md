@@ -1,3 +1,4 @@
-- Octavo is now open source (AGPL-3.0-or-later). The Octavo Cloud server remains a separate service.
-- PDF: Obsidian's built-in pdf.js viewer is loaded with a standard module import (no script elements).
-- Releases are built from this repository by GitHub Actions and carry signed build attestations.
+- Review fixes: styles set through CSS classes; Obsidian's pdf.js viewer loaded with a literal module import;
+  settings heading and command names no longer repeat the plugin name.
+- Popout windows: auto-scroll uses the window's own animation frames.
+- Kindle import: byte-order marks handled without invisible characters in the source.

@@ -120,7 +120,7 @@ export class OctavoSettingTab extends PluginSettingTab {
       }))
     }
 
-    new Setting(c).setName('Octavo Cloud').setHeading()
+    new Setting(c).setName('Cloud').setHeading()
     c.createEl('p', { cls: 'setting-item-description', text: 'Optional paid service: keep books outside your vault (works with Obsidian Sync Standard\'s 5 MB limit), send books by email, OCR for scanned PDFs, natural read-aloud voices and KOReader sync. Octavo itself is free and works fully without it.' })
     this.plugin.cloud.renderSettings(c, () => this.display())
   }

@@ -262,7 +262,7 @@ export class BookLibrary {
     try {
       await this.ensureFolder(path.split('/').slice(0, -1).join('/'))
       return await this.app.vault.create(path, '')
-    } catch (e) {
+    } catch {
       new Notice('Octavo: could not create today\'s daily note')
       return null
     }

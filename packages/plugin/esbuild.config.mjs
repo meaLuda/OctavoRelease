@@ -14,7 +14,7 @@ const ctx = await esbuild.context({
   target: 'es2022',
   platform: 'browser',
   outfile: `${outdir}/main.js`,
-  external: ['obsidian', 'electron', '@codemirror/*', '@lezer/*', 'pdfjs-dist'],
+  external: ['obsidian', 'electron', '@codemirror/*', '@lezer/*', 'pdfjs-dist', '/lib/pdfjs/*'],
   define: { __FOLIATE_SUFFIX__: JSON.stringify(buildId), __OCTAVO_DEV__: String(!prod) },
   sourcemap: prod ? false : 'inline',
   minify: prod,
