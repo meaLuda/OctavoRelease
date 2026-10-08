@@ -18,6 +18,19 @@ Website: https://octavo.devformat.tools
 
 In Obsidian, go to **Settings → Community plugins → Browse**, search for **Octavo**, then select **Install** and **Enable**.
 
+## On mobile (iPhone, iPad, Android)
+
+Obsidian keeps plugin icons in the **ribbon menu**: tap the **Menu** button at the bottom right. To show Octavo
+there, open Settings → Appearance → Ribbon menu → Manage and turn on "Octavo library". You can also run
+**"Octavo Reader: Open library"** from the command palette, or simply tap any EPUB or PDF in your files.
+
+## Beta testing
+
+Want new builds before everyone else? Install the **BRAT** plugin, choose "Add beta plugin" and enter
+`meaLuda/OctavoRelease`. Beta builds are marked as pre-releases and never reach directory installs.
+If something looks wrong on your phone, run **"Octavo Reader: Copy mobile diagnostics"** and paste the report
+into an issue.
+
 ## Octavo Cloud (optional)
 
 The reader is free and works fully offline. **Octavo Cloud** is an optional paid subscription for hosted services that cost money to run:

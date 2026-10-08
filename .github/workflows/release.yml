@@ -20,8 +20,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - name: Check the tag matches manifest.json
-        run: test "$(node -p "require('./manifest.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Check the tag matches the plugin manifest
+        run: test "$(node -p "require('./packages/plugin/manifest.json').version")" = "${GITHUB_REF_NAME}"
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
@@ -32,5 +32,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Tags with a hyphen (1.0.4-beta.1) are pre-releases: BRAT testers only, never directory users.
+          PRE=""; case "$GITHUB_REF_NAME" in *-*) PRE="--prerelease";; esac
           gh release create "$GITHUB_REF_NAME" packages/plugin/dist/main.js packages/plugin/dist/manifest.json packages/plugin/dist/styles.css \
-            --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+            --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md $PRE

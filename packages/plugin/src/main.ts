@@ -11,6 +11,8 @@ import { ImportModal } from './library/ImportModal'
 import { LibraryView, LIBRARY_VIEW } from './library/LibraryView'
 import { askAI, aiConfigured } from './ai/ask'
 import { CloudClient } from './cloud/CloudClient'
+import { besideLeaf } from './platform'
+import { collectDiagnostics } from './diagnostics'
 
 /** Octavo mark: an open book with a ribbon bookmark (100×100, currentColor, Lucide-weight strokes). */
 const OCTAVO_ICON = `<g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
@@ -61,6 +63,7 @@ export default class OctavoPlugin extends Plugin {
       this.library.reindex()
       void this.loadCustomFont()
       this.updateStatus()
+      void this.welcomeOnMobile()
     })
     this.registerEvent(this.app.metadataCache.on('changed', f => this.library.indexNote(f)))
     this.registerEvent(this.app.vault.on('delete', (f: TAbstractFile) => this.library.forgetNote(f.path)))
@@ -131,7 +134,8 @@ export default class OctavoPlugin extends Plugin {
   }
 
   private registerCommands() {
-    this.addCommand({ id: 'open-library', name: 'Open library', callback: () => void this.openLibrary() })
+    this.addCommand({ id: 'open-library', name: 'Open library', icon: 'library', callback: () => void this.openLibrary() })
+    this.addCommand({ id: 'copy-diagnostics', name: 'Copy mobile diagnostics', icon: 'stethoscope', callback: () => void this.copyDiagnostics() })
     this.addCommand({ id: 'open-library-base', name: 'Open library as a Base (table / custom views)', callback: () => void this.openLibraryBase() })
     this.addCommand({ id: 'import-highlights', name: 'Import highlights from another reader…', callback: () => new ImportModal(this.app, this).open() })
     this.addCommand({
@@ -149,7 +153,7 @@ export default class OctavoPlugin extends Plugin {
         const v = this.app.workspace.getActiveViewOfType(EpubView) ?? this.app.workspace.getActiveViewOfType(PdfView)
         const note = v?.file ? this.library.noteFor(v.file) : null
         if (!note) return false
-        if (!checking) void this.app.workspace.getLeaf('split').openFile(note)
+        if (!checking) void besideLeaf(this.app).openFile(note)
         return true
       },
     })
@@ -175,6 +179,21 @@ export default class OctavoPlugin extends Plugin {
     this.addCommand({ id: 'year-in-review', name: 'Write my year in review', callback: () => void this.yearInReview() })
     this.addCommand({ id: 'cloud-sign-in', name: 'Sign in to cloud', callback: () => void this.cloud.signIn() })
     this.addCommand({ id: 'cloud-library', name: 'Browse cloud library', callback: () => void this.cloud.browse() })
+  }
+
+  /** Mobile hides plugin ribbon icons behind the Menu button, so show new users where Octavo lives, once. */
+  private async welcomeOnMobile() {
+    if (!Platform.isMobile || this.settings.mobileWelcomed) return
+    this.settings.mobileWelcomed = true
+    await this.saveSettings()
+    await this.openLibrary()
+    new Notice('Octavo: find your library in the ribbon menu (bottom right) or the command palette. Tap any EPUB or PDF to read it.', 12000)
+  }
+
+  private async copyDiagnostics() {
+    const report = await collectDiagnostics(this.app, this.manifest.version)
+    try { await navigator.clipboard.writeText(report); new Notice('Octavo diagnostics copied to the clipboard') } catch { /* shown below */ }
+    new MarkdownModal(this.app, 'Octavo diagnostics', '```\n' + report + '\n```').open()
   }
 
   async openLibrary() {

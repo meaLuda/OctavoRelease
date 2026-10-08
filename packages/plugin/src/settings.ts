@@ -27,6 +27,8 @@ export const DEFAULT_TYPOGRAPHY: Typography = {
 }
 
 export interface OctavoSettings {
+  /** Mobile first-run guidance shown (see welcomeOnMobile). */
+  mobileWelcomed?: boolean
   booksFolder: string
   coversFolder: string
   theme: ThemeId

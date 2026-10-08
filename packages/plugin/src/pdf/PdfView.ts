@@ -1,4 +1,5 @@
 import { FileView, Menu, Notice, Platform, TFile, WorkspaceLeaf, loadPdfJs, moment } from 'obsidian'
+import { besideLeaf, canPopout } from '../platform'
 import {
   isJunkTitle, cleanBookName, normalizeAuthors, tidyTitle, bookIdFromBytes, findQuote, makeQuote, newHighlightId, parseSubpath, formatPdfSubpath,
   type Highlight, type HighlightColor, type ParsedHighlight, type PdfSelection,
@@ -829,9 +830,9 @@ export class PdfView extends FileView {
   private moreMenu(e: MouseEvent) {
     const m = new Menu()
     m.addItem(i => i.setTitle(this.focusMode.active ? 'Exit focus mode' : 'Focus mode (full screen)').setIcon(this.focusMode.active ? 'minimize' : 'maximize').onClick(() => this.focusMode.toggle()))
-    m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
+    if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
     m.addItem(i => i.setTitle(this.mode === 'text' ? 'Page view' : 'Text view (reflow)').setIcon(this.mode === 'text' ? 'file' : 'align-left').onClick(() => { this.plugin.settings.pdfMode = this.mode === 'text' ? 'pages' : 'text'; void this.plugin.saveSettings(); this.applyLook() }))
-    m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && this.app.workspace.getLeaf('split').openFile(this.note)))
+    m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
     m.addItem(i => i.setTitle('Zoom in').setIcon('zoom-in').onClick(() => this.zoomBy(1.2)))
     m.addItem(i => i.setTitle('Zoom out').setIcon('zoom-out').onClick(() => this.zoomBy(1 / 1.2)))
     m.addItem(i => i.setTitle('Fit width').setIcon('maximize-2').onClick(() => { this.zoom = 'page-width'; this.fit() }))

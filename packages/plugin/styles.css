@@ -417,3 +417,5 @@ body.octavo-focus .app-container, body.octavo-focus .horizontal-main-container {
 .octavo-signin-tick svg { width: 26px; height: 26px; }
 .octavo-signin-plan { font-weight: var(--font-semibold); font-size: var(--font-ui-medium); }
 .octavo-reflow-pending { min-height: 40vh; }
+.octavo-safe-area-probe { position: fixed; visibility: hidden; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.octavo-hidden-probe { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; }

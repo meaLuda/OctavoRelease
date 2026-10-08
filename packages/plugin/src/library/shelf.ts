@@ -1,4 +1,5 @@
 import { BasesView, TFile, normalizePath, setIcon, type QueryController } from 'obsidian'
+import { besideLeaf } from '../platform'
 import { computeStreak } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 
@@ -57,7 +58,7 @@ class ShelfView extends BasesView {
       }
       card.onclick = e => open(e.metaKey || e.ctrlKey)
       card.onkeydown = e => { if (e.key === 'Enter') open(false) }
-      card.oncontextmenu = e => { e.preventDefault(); void this.app.workspace.getLeaf('split').openFile(note) }
+      card.oncontextmenu = e => { e.preventDefault(); void besideLeaf(this.app).openFile(note) }
     }
   }
 

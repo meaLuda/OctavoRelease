@@ -1,4 +1,5 @@
 import { ItemView, Menu, Notice, TFile, WorkspaceLeaf, moment, normalizePath, setIcon, loadPdfJs, debounce } from 'obsidian'
+import { besideLeaf, canPopout } from '../platform'
 import { cleanBookName, isJunkTitle, normalizeAuthors, tidyTitle } from '@octavo/shared'
 import { makeBook } from '@octavo/foliate/view.js'
 import type OctavoPlugin from '../main'
@@ -291,8 +292,8 @@ export class LibraryView extends ItemView {
     const m = new Menu()
     m.addItem(i => i.setTitle('Open').setIcon('book-open').onClick(() => this.openBook(it, false)))
     m.addItem(i => i.setTitle('Open in new tab').setIcon('file-plus').onClick(() => this.openBook(it, true)))
-    m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => void this.plugin.openInOctavo(it.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
-    if (it.note) m.addItem(i => i.setTitle('Open book note beside').setIcon('file-text').onClick(() => void this.app.workspace.getLeaf('split').openFile(it.note!)))
+    if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => void this.plugin.openInOctavo(it.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
+    if (it.note) m.addItem(i => i.setTitle('Open book note beside').setIcon('file-text').onClick(() => void besideLeaf(this.app).openFile(it.note!)))
     m.addSeparator()
     const setStatus = (st: string, label: string, icon: string) => m.addItem(i => i.setTitle(label).setIcon(icon).setChecked(it.status === st).onClick(() => void this.setStatus(it, st)))
     setStatus('want', 'Want to read', 'bookmark-plus'); setStatus('reading', 'Reading', 'book-open'); setStatus('finished', 'Finished', 'check-circle')

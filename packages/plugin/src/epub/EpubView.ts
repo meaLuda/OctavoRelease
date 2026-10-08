@@ -1,4 +1,5 @@
 import { FileView, Menu, Notice, Platform, TFile, WorkspaceLeaf, moment, setIcon } from 'obsidian'
+import { besideLeaf, canPopout } from '../platform'
 import { makeBook } from '@octavo/foliate/view.js'
 import { Overlayer } from '@octavo/foliate/overlayer.js'
 import * as CFI from '@octavo/foliate/epubcfi.js'
@@ -698,8 +699,8 @@ export class EpubView extends FileView {
   private moreMenu(e: MouseEvent) {
     const m = new Menu()
     m.addItem(i => i.setTitle(this.focusMode.active ? 'Exit focus mode' : 'Focus mode (full screen)').setIcon(this.focusMode.active ? 'minimize' : 'maximize').onClick(() => this.focusMode.toggle()))
-    m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
-    m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && this.app.workspace.getLeaf('split').openFile(this.note)))
+    if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
+    m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
     m.addItem(i => i.setTitle(this.autoScroll ? 'Stop auto-scroll' : 'Auto-scroll').setIcon('arrow-down-wide-narrow').onClick(() => this.toggleAutoScroll()))
     m.addItem(i => i.setTitle('Go to percentage…').setIcon('percent').onClick(async () => {
       const v = await new TextPromptModal(this.app, 'Go to', String(Math.round((this.loc?.fraction ?? 0) * 100)), 'Percentage (0–100)').result()
