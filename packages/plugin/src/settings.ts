@@ -1,4 +1,5 @@
 import type { HighlightColor } from '@octavo/shared'
+import type { PdfBookLayout } from './pdf/layout'
 
 export type ThemeId = 'original' | 'quiet' | 'paper' | 'bold' | 'calm' | 'focus' | 'black'
 export type Appearance = 'auto' | 'light' | 'dark'
@@ -50,6 +51,8 @@ export interface OctavoSettings {
   pdfDark: PdfDark
   pdfCrop: boolean
   pdfMode: 'pages' | 'text'
+  /** Per-book PDF fit/crop/scroll/direction/zoom, keyed `phone:<book id>` / `wide:<book id>`. In plugin data, not the note. */
+  pdfLayouts: Record<string, PdfBookLayout>
   dailyNoteLog: boolean
   goals: { enabled: boolean; dailyMinutes: number; yearlyBooks: number; restDaysPerWeek: number }
   stats: { minutesByDay: Record<string, number>; finishedByYear: Record<string, number> }
@@ -93,6 +96,7 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   pdfDark: 'invert-except-images',
   pdfCrop: false,
   pdfMode: 'pages',
+  pdfLayouts: {},
   dailyNoteLog: false,
   goals: { enabled: false, dailyMinutes: 15, yearlyBooks: 12, restDaysPerWeek: 1 },
   stats: { minutesByDay: {}, finishedByYear: {} },

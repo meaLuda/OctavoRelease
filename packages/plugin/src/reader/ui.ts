@@ -186,8 +186,7 @@ export class SelectionPopover {
     x = Math.max(8, Math.min(x, r.width - pw - 8))
     let y = rect.top - r.top - ph - 10
     if (y < 8) y = rect.bottom - r.top + 10
-    p.style.left = `${x}px`
-    p.style.top = `${Math.min(y, r.height - ph - 8)}px`
+    p.setCssStyles({ left: `${x}px`, top: `${Math.min(y, r.height - ph - 8)}px` })
   }
   hide(): void { this.el.hide() }
   get visible(): boolean { return this.el.isShown() }

@@ -1,6 +1,10 @@
 import { DEFAULT_TYPOGRAPHY, type OctavoSettings, type ThemeId, type Typography, type FontChoice } from '../settings'
 import { THEMES, type ResolvedLook, nightLightFactor } from './themes'
 import { el } from './ui'
+import type { ResolvedLayout } from '../pdf/layout'
+
+/** The open PDF's per-book layout (fit / crop / scroll / zoom). */
+export interface PdfLayoutControl { get(): ResolvedLayout; set(patch: Partial<ResolvedLayout>): void }
 
 export function resolveLook(s: OctavoSettings, obsidianDark: boolean): ResolvedLook {
   const preset = THEMES[s.theme] ?? THEMES.original
@@ -33,7 +37,7 @@ const FONT_LABELS: Array<[FontChoice, string]> = [
 ]
 
 /** Renders the Appearance panel. The page itself is the preview: every change applies live. */
-export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianDark: boolean, apply: () => void, opts: { pdf?: boolean } = {}): void {
+export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianDark: boolean, apply: () => void, opts: { pdf?: boolean; pdfLayout?: PdfLayoutControl } = {}): void {
   const save = () => { apply() }
   const section = (title: string) => { const d = el('div', 'octavo-ap-section', body); el('div', 'octavo-ap-title', d, title); return d }
 
@@ -79,8 +83,21 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
     }
   }
   if (opts.pdf) {
-    seg(row(general, 'View'), [['pages', 'Pages'], ['text', 'Text']] as Array<['pages' | 'text', string]>, s.pdfMode, v => (s.pdfMode = v))
-    seg(row(general, 'Dark mode'), [['invert-except-images', 'Smart invert'], ['sepia', 'Sepia'], ['none', 'Original']], s.pdfDark, v => (s.pdfDark = v))
+    const layout = section('Layout')
+    seg(row(layout, 'View'), [['pages', 'Pages'], ['text', 'Text']] as Array<['pages' | 'text', string]>, s.pdfMode, v => (s.pdfMode = v))
+    const pl = opts.pdfLayout
+    if (pl && s.pdfMode !== 'text') {
+      const L = pl.get()
+      // per book: the page is the preview, and the choice is remembered for this book
+      seg(row(layout, 'Fit'), [['auto', 'Auto'], ['width', 'Width'], ['page', 'Page']] as Array<[ResolvedLayout['fit'], string]>, L.fit, v => pl.set({ fit: v, zoom: 1 }))
+      const crop = row(layout, 'Crop margins')
+      const cropToggle = el('div', `checkbox-container${L.crop ? ' is-enabled' : ''}`, crop)
+      cropToggle.setAttribute('aria-label', 'Crop page margins')
+      cropToggle.onclick = () => { pl.set({ crop: !pl.get().crop, zoom: 1 }); rerender() }
+      seg(row(layout, 'Scroll'), [['vertical', 'Vertical'], ['paged', 'Paged']] as Array<[ResolvedLayout['scroll'], string]>, L.scroll, v => pl.set({ scroll: v }))
+      if (L.scroll === 'paged') seg(row(layout, 'Direction'), [['ltr', 'Left to right'], ['rtl', 'Right to left']] as Array<[ResolvedLayout['dir'], string]>, L.dir, v => pl.set({ dir: v }))
+    }
+    seg(row(layout, 'Dark mode'), [['invert-except-images', 'Smart invert'], ['sepia', 'Sepia'], ['none', 'Original']], s.pdfDark, v => (s.pdfDark = v))
   }
   seg(row(general, 'Footer'), [['chapter', 'Chapter'], ['book', 'Book'], ['time', 'Time left'], ['off', 'Off']], s.footer, v => (s.footer = v))
   const nl = row(general, 'Night light')

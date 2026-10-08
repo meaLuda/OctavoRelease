@@ -560,7 +560,7 @@ export class EpubView extends FileView {
     const rect = rangeRectInHost(hit[1])
     const rr = this.root.getBoundingClientRect()
     const target = el('div', 'octavo-hover-target', this.root)
-    target.style.cssText = `left:${rect.left - rr.left}px;top:${rect.top - rr.top}px;width:${Math.max(4, rect.width)}px;height:${Math.max(4, rect.height)}px`
+    target.setCssStyles({ left: `${rect.left - rr.left}px`, top: `${rect.top - rr.top}px`, width: `${Math.max(4, rect.width)}px`, height: `${Math.max(4, rect.height)}px` })
     window.setTimeout(() => target.remove(), 8000)
     this.app.workspace.trigger('hover-link', { event: e, source: 'octavo', hoverParent: this, targetEl: target, linktext, sourcePath: this.file?.path ?? '' })
   }

@@ -93,6 +93,7 @@ export default class OctavoPlugin extends Plugin {
       cloud: { ...d.cloud, ...data.cloud },
       library: { ...d.library, ...data.library },
       overrides: { ...data.overrides },
+      pdfLayouts: { ...data.pdfLayouts },
       tapZones: Array.isArray(data.tapZones) && data.tapZones.length === 9 ? data.tapZones : d.tapZones,
     }
   }

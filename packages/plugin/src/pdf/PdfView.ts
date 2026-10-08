@@ -6,16 +6,21 @@ import {
 } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import type { Backlink } from '../library/BookLibrary'
-import { ReaderChrome, SelectionPopover, SidePanel, el, type PanelTab } from '../reader/ui'
+import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook } from '../reader/appearance'
 import { fontStack } from '../reader/themes'
 import { COLOR_CSS } from '../reader/colors'
 import { Speaker } from '../reader/speech'
+import { PdfReadAloudUi } from './readAloudUi'
 import { FocusMode } from '../reader/focus'
 import { TextPromptModal } from '../reader/modals'
 import { ensurePdfjs, openPdfDocument, PDF_ASSETS } from './source'
 import { mergeLines, imageCoverage } from './geometry'
 import { reflow, figureBands, continues } from './reflow'
+import {
+  resolveLayout, pruneLayouts, turnFor, clampZoom, effectiveFit, useSpread, inkBox, cropBox, isBleed, sameSize, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, joinCopiedLines,
+  type Box, type ResolvedLayout,
+} from './layout'
 
 export const PDF_VIEW = 'octavo-pdf'
 
@@ -50,12 +55,29 @@ export class PdfView extends FileView {
   private pendingSubpath: string | null = null
   private ready = false
   focusMode = new FocusMode(() => this.containerEl.doc)
-  private zoom: number | 'page-width' = 'page-width'
+  /** Fit / crop / scroll / zoom for this book (zoom is relative to the fit, so it survives resizes). */
+  private layout: ResolvedLayout = resolveLayout(undefined, { crop: false })
+  private crop: Box | null = null
+  private boxCache = new Map<number, Box | null>()
+  private fitBase = 1
+  private measuring = false
+  private wantScale = 0
+  private wantTimer = 0
+  private layoutTimer = 0
+  private scrub!: HTMLInputElement
+  private scrubBubble!: HTMLElement
+  private tapTimer = 0
+  private lastTap = { t: 0, x: 0, y: 0 }
+  private noTapUntil = 0
+  private gutter() { return Platform.isPhone ? 6 : 20 }
+  /** Phones and larger screens keep separate layouts per book (plugin data may sync between them). */
+  private layoutKey() { return `${Platform.isPhone ? 'phone' : 'wide'}:${this.bookId}` }
   private darkKey = ''
   private textCache = new Map<number, { items: string[]; eol: boolean[] }>()
   private textView!: HTMLElement
   private textIO: IntersectionObserver | null = null
   private rawCache = new Map<number, any[]>()
+  private tts: PdfReadAloudUi | null = null
 
   constructor(leaf: WorkspaceLeaf, private plugin: OctavoPlugin) { super(leaf); this.navigation = true }
   getViewType() { return PDF_VIEW }
@@ -69,6 +91,7 @@ export class PdfView extends FileView {
     this.contentEl.addClass('octavo-view')
     this.root = el('div', 'octavo-reader octavo-pdf', this.contentEl)
     this.root.tabIndex = 0
+    this.root.setAttribute('data-ignore-swipe', 'true') // Obsidian's drawer swipe stays out of panning and page turns
     this.container = el('div', 'octavo-pdf-container', this.root)
     el('div', 'pdfViewer', this.container)
     this.textView = el('div', 'octavo-pdf-textview', this.root)
@@ -78,13 +101,26 @@ export class PdfView extends FileView {
     this.chrome = new ReaderChrome(this.root, {
       toc: () => this.panel.open('toc'), search: () => this.panel.open('search'), highlights: () => this.panel.open('highlights'),
       bookmark: () => void this.toggleBookmark(), appearance: () => this.panel.open('appearance'), speak: () => this.speakPage(),
-      more: e => this.moreMenu(e), prev: () => this.viewer?.previousPage(), next: () => this.viewer?.nextPage(), footerTap: () => this.panel.open('map'),
+      more: e => this.moreMenu(e), prev: () => this.turnSide('left'), next: () => this.turnSide('right'), footerTap: () => this.panel.open('map'),
     }, () => this.plugin.settings.autoHideMs, visible => this.setImmersive(!visible))
+    this.buildScrubber()
     this.popover = new SelectionPopover(this.root)
     this.panel = new SidePanel(this.root, (t, b) => this.renderPanel(t, b))
     this.container.addEventListener('pointerup', () => window.setTimeout(() => this.checkSelection(), Platform.isMobile ? 350 : 60))
     this.container.addEventListener('click', e => this.onClick(e))
-    this.container.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); this.zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1) } }, { passive: false })
+    // ctrl/cmd+wheel; a trackpad pinch arrives as ctrl+wheel with small deltas
+    this.container.addEventListener('wheel', e => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      this.zoomAt(Math.exp(-Math.max(-25, Math.min(25, e.deltaY)) / 125), e.clientX, e.clientY)
+    }, { passive: false })
+    this.container.addEventListener('dblclick', e => {
+      if (Platform.isMobile || (e.target as Element).closest('.textLayer span, a, .octavo-pdf-hlmark, .annotationLayer section')) return // double-click on text still selects a word
+      e.preventDefault()
+      this.zoomToBlock(e.clientX, e.clientY)
+    })
+    this.container.addEventListener('copy', e => this.onCopy(e))
+    this.wireTouch()
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
     this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
@@ -130,6 +166,9 @@ export class PdfView extends FileView {
       const props = this.plugin.library.getProps(this.note)
       if (!props.cover) void this.saveCover()
       loading.remove()
+      const saved = this.plugin.settings.pdfLayouts[this.layoutKey()]
+      this.layout = resolveLayout(saved, { crop: Platform.isPhone || this.plugin.settings.pdfCrop })
+      this.crop = saved?.box ?? null
       this.buildViewer(this.pendingSubpath ? 1 : Number(props.page) || 1)
       this.applyLook()
       this.ready = true
@@ -167,37 +206,286 @@ export class PdfView extends FileView {
     linkService.setViewer(viewer)
     this.eventBus = eventBus
     this.viewer = viewer
+    const start = Math.min(this.doc.numPages, Math.max(1, startPage))
+    // crop box: remembered, or measured (low-res renders) once the first page is on screen, so opening never waits
+    this.measuring = this.layout.crop && !this.crop
+    let asked = false
+    eventBus.on('pagerendered', () => {
+      if (!this.measuring || asked) return
+      asked = true
+      void this.findCrop(this.page).then(b => {
+        if (this.viewer !== viewer) return
+        this.measuring = false
+        if (b && this.layout.crop) { this.crop = b; this.fit() }
+        this.saveLayout()
+      })
+    })
     eventBus.on('pagesinit', async () => {
+      viewer.currentPageNumber = start
       this.fit()
-      viewer.currentPageNumber = Math.min(this.doc.numPages, Math.max(1, startPage))
       if (this.pendingSubpath) { const sp = this.pendingSubpath; this.pendingSubpath = null; await this.navigateSubpath(sp) }
     })
     eventBus.on('pagechanging', ({ pageNumber }: { pageNumber: number }) => {
       this.page = pageNumber
       this.updateFooter()
+      this.alignCrop()
+      this.updateFitClass()
       window.clearTimeout(this.saveTimer)
       this.saveTimer = window.setTimeout(() => void this.savePosition(), 2000)
     })
     eventBus.on('textlayerrendered', ({ pageNumber }: { pageNumber: number }) => this.onTextLayer(pageNumber))
-    eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => void this.markScanned(pageNumber))
+    eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => { void this.markScanned(pageNumber); void this.checkCrop(pageNumber) })
     viewer.setDocument(this.doc)
     linkService.setDocument(this.doc, null)
   }
 
-  /** Fit width; two-page spread when there's room (desktop/tablet landscape). */
+  /**
+   * Apply the book's layout: scroll mode, spread, and a scale of fit × zoom. Desktop without crop or zoom keeps
+   * pdf.js's own 'page-width' / 'page-fit' (unchanged behaviour); phones and crops use a computed scale.
+   */
   private fit() {
     const v = this.viewer
     if (!v?.pagesCount) return
-    const wide = this.root.clientWidth >= 1550 && !Platform.isPhone && this.zoom === 'page-width' // spread only when each page gets ≥ ~750px
-    const spread = wide ? 1 : 0 // SpreadMode.ODD | NONE
+    const L = this.layout, phone = Platform.isPhone
+    const spread = useSpread(L, this.root.clientWidth, phone) ? 1 : 0 // SpreadMode.ODD | NONE
+    const scroll = L.scroll === 'paged' ? 3 : 0 // ScrollMode.PAGE | VERTICAL
+    if (v.scrollMode !== scroll) v.scrollMode = scroll
     if (v.spreadMode !== spread) v.spreadMode = spread
-    v.currentScaleValue = this.zoom === 'page-width' ? 'page-width' : this.zoom
+    this.root.toggleClass('is-paged', scroll === 3)
+    const fit = effectiveFit(L.fit)
+    const crop = L.crop && !spread ? this.crop : null
+    this.wantScale = 0
+    if (!crop && L.zoom === 1 && !phone) {
+      v.currentScaleValue = fit === 'page' ? 'page-fit' : 'page-width'
+      this.fitBase = v.currentScale
+    } else {
+      const pv = this.pageView(this.page) ?? this.pageView(1)
+      if (!pv?.viewport || !pv.scale) return
+      const unitW = pv.viewport.width / pv.scale, unitH = pv.viewport.height / pv.scale
+      const viewH = this.container.clientHeight - (phone ? 52 : 88) // minus the bars' padding
+      this.fitBase = fitScale(fit, unitW, unitH, this.container.clientWidth, viewH, this.gutter(), crop)
+      v.currentScale = this.fitBase * L.zoom
+    }
+    this.updateFitClass()
+    this.alignCrop()
   }
 
-  private zoomBy(f: number) {
-    if (!this.viewer) return
-    this.zoom = Math.min(5, Math.max(0.3, this.viewer.currentScale * f))
+  /** At fit zoom with a crop, keep the crop box's left edge at the gutter (pdf.js resets scrollLeft on navigation). */
+  private alignCrop() {
+    if (!this.crop || !this.layout.crop || this.layout.zoom !== 1 || this.mode !== 'pages') return
+    window.requestAnimationFrame(() => {
+      const div = this.pageView(this.page)?.div as HTMLElement | undefined
+      if (!div || !this.crop) return
+      const cr = this.container.getBoundingClientRect(), r = div.getBoundingClientRect()
+      this.container.scrollLeft = cropScrollLeft(r.left - cr.left + this.container.scrollLeft, r.width, this.crop, this.gutter(), this.container.clientWidth)
+    })
+  }
+
+  /** Touch panning: vertical only at fit zoom (page turns and no margin drift), free when zoomed in or on a full-bleed page. */
+  private updateFitClass() {
+    const b = this.boxCache.get(this.page)
+    const bleed = !!b && (isBleed(b) || !sameSize(b, this.crop ?? {})) && !!this.crop && this.layout.crop
+    this.root.toggleClass('is-fit', this.layout.zoom === 1 && !bleed)
+  }
+
+  /** Ink box of page n from a ~160px-wide render (cached per book). */
+  private async pageBox(n: number): Promise<Box | null> {
+    if (this.boxCache.has(n)) return this.boxCache.get(n)!
+    const doc = this.doc
+    const page = await doc.getPage(n)
+    const vp = page.getViewport({ scale: 160 / page.getViewport({ scale: 1 }).width })
+    const c = document.createElement('canvas')
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height)
+    const ctx = c.getContext('2d', { willReadFrequently: true })!
+    await page.render({ canvasContext: ctx, viewport: vp }).promise
+    const ink = inkBox(ctx.getImageData(0, 0, c.width, c.height))
+    const vp1 = page.getViewport({ scale: 1 })
+    const b = ink && { ...ink, w: Math.round(vp1.width), h: Math.round(vp1.height) }
+    c.width = c.height = 0
+    if (doc === this.doc) this.boxCache.set(n, b)
+    return b
+  }
+
+  private async findCrop(start: number): Promise<Box | null> {
+    const pages = [start, start + 1, start + 2].filter(p => p <= this.doc.numPages)
+    return cropBox(await Promise.all(pages.map(p => this.pageBox(p).catch(() => null))))
+  }
+
+  /** A rendered page with ink outside the crop widens it, so same-size pages are never cut. */
+  private async checkCrop(n: number) {
+    if (!this.layout.crop || this.mode !== 'pages' || this.measuring) return
+    const b = await this.pageBox(n).catch(() => null)
+    if (!this.layout.crop) return
+    if (!this.crop || !outside(b, this.crop)) { if (n === this.page) this.updateFitClass(); return }
+    this.crop = widen(this.crop, b!)
     this.fit()
+    this.saveLayout()
+  }
+
+  /** Remember this book's layout (debounced). */
+  private saveLayout() {
+    if (!this.bookId) return
+    const s = this.plugin.settings, L = this.layout
+    s.pdfLayouts = pruneLayouts({ ...s.pdfLayouts, [this.layoutKey()]: { fit: L.fit, crop: L.crop, scroll: L.scroll, dir: L.dir, zoom: Math.round(L.zoom * 1000) / 1000, box: this.crop, t: Date.now() } })
+    window.clearTimeout(this.layoutTimer)
+    this.layoutTimer = window.setTimeout(() => void this.plugin.saveSettings(), 600)
+  }
+
+  /** Change the book's layout from the Appearance panel. */
+  private setLayout(patch: Partial<ResolvedLayout>) {
+    const cropOn = patch.crop === true && !this.layout.crop
+    this.layout = { ...this.layout, ...patch }
+    if (cropOn && !this.crop) void this.findCrop(this.page).then(b => { this.crop = b; this.fit(); this.saveLayout() })
+    this.fit()
+    this.saveLayout()
+  }
+
+  /** Zoom by f around a point (client coords), keeping that point still. Re-renders sharp once it settles. */
+  private zoomAt(f: number, x?: number, y?: number) {
+    const v = this.viewer
+    if (!v?.pagesCount || this.mode !== 'pages') return
+    const want = Math.min(this.fitBase * 6, Math.max(this.fitBase * 0.5, (this.wantScale || v.currentScale) * f))
+    this.scaleTo(want, x, y)
+    window.clearTimeout(this.wantTimer)
+    this.wantTimer = window.setTimeout(() => { this.wantScale = 0 }, 500)
+  }
+
+  /** Set an absolute scale with a focal point. The target is tracked separately because pdf.js rounds to 0.01. */
+  private scaleTo(want: number, x?: number, y?: number) {
+    const v = this.viewer
+    this.wantScale = want
+    const cr = this.container.getBoundingClientRect()
+    const origin = [x ?? cr.left + cr.width / 2, y ?? cr.top + cr.height / 2]
+    const k = want / v.currentScale
+    if (Math.abs(k - 1) > 0.004) {
+      // the page point under the origin, so it can be put back exactly (centred pages shift as they grow)
+      const pageEl = this.containerEl.doc.elementFromPoint(origin[0]!, origin[1]!)?.closest('.page') as HTMLElement | null
+      const r0 = pageEl?.getBoundingClientRect()
+      const rel = r0 && r0.width ? [(origin[0]! - r0.left) / r0.width, (origin[1]! - r0.top) / r0.height] : null
+      if (v.updateScale) {
+        v.updateScale({ scaleFactor: k, origin, drawingDelay: 400 })
+        const r1 = rel && pageEl!.isConnected ? pageEl!.getBoundingClientRect() : null
+        if (r1) { this.container.scrollLeft += r1.left + rel![0]! * r1.width - origin[0]!; this.container.scrollTop += r1.top + rel![1]! * r1.height - origin[1]! }
+      }
+      else { // older pdf.js: set the scale, then restore the focal point ourselves
+        const st = this.container.scrollTop, sl = this.container.scrollLeft
+        v.currentScale = want
+        const f = focalScroll(sl, st, origin[0]! - cr.left, origin[1]! - cr.top, k)
+        this.container.scrollLeft = f.left; this.container.scrollTop = f.top
+      }
+    }
+    const zoom = clampZoom(want / this.fitBase)
+    const wasFit = this.layout.zoom === 1
+    this.layout.zoom = Math.abs(zoom - 1) < 0.02 ? 1 : zoom
+    if (wasFit !== (this.layout.zoom === 1) && useSpread({ ...this.layout, zoom: 1 }, this.root.clientWidth, Platform.isPhone)) this.fit()
+    this.updateFitClass()
+    this.saveLayout()
+  }
+
+  private zoomBy(f: number) { this.zoomAt(f) }
+
+  /** Arrow keys / edge arrows: the right side is "next" unless the book reads right to left (paged mode). */
+  private turnSide(side: 'left' | 'right') {
+    this.turn(turnFor(side, this.layout.scroll === 'paged' ? this.layout.dir : 'ltr'))
+  }
+
+  /** Next (+1) or previous (-1) page; in paged mode the new page slides in from the side it came from. */
+  private turn(step: 1 | -1) {
+    const v = this.viewer
+    if (this.mode === 'text') { this.goToPage(this.page + step); return }
+    if (!v?.pagesCount || !(step > 0 ? v.nextPage() : v.previousPage())) return
+    if (this.layout.scroll !== 'paged') return
+    const inner = this.container.querySelector('.pdfViewer') as HTMLElement | null
+    if (!inner) return
+    // LTR: next arrives from the right; RTL mirrors it
+    const fromRight = (step > 0) !== (this.layout.dir === 'rtl')
+    inner.removeClasses(['octavo-slide-from-right', 'octavo-slide-from-left'])
+    void inner.offsetWidth // restart the animation
+    inner.addClass(fromRight ? 'octavo-slide-from-right' : 'octavo-slide-from-left')
+    window.setTimeout(() => inner.removeClasses(['octavo-slide-from-right', 'octavo-slide-from-left']), 260)
+  }
+
+  private resetZoom() { this.layout.zoom = 1; this.fit(); this.saveLayout() }
+
+  /** Double-tap / double-click: zoom so the column under the point fills the width; again returns to fit. */
+  private zoomToBlock(x: number, y: number) {
+    if (!this.viewer?.pagesCount || this.mode !== 'pages') return
+    if (this.layout.zoom > 1.05) return this.resetZoom()
+    const pageEl = this.containerEl.doc.elementFromPoint(x, y)?.closest('.page')
+    const rects = pageEl ? Array.from(pageEl.querySelectorAll('.textLayer span')).map(s => s.getBoundingClientRect()).filter(r => r.width > 0) : []
+    const col = columnAt(rects, x, y, this.container.clientHeight * 0.25)
+    const z = blockZoom(col ? col.right - col.left : null, this.container.clientWidth, this.gutter())
+    const ox = z.column ? col!.left : x
+    this.scaleTo(this.viewer.currentScale * z.k, ox, y)
+    this.wantScale = 0
+    if (z.column) this.container.scrollLeft += ox - this.container.getBoundingClientRect().left - this.gutter()
+  }
+
+  /** Touch: two-finger pinch (focal point follows the fingers), and swipe to turn pages in paged mode. */
+  private wireTouch() {
+    let pinch: { d0: number; s0: number; mx: number; my: number } | null = null
+    let swipe: { x: number; y: number; t: number; sl: number } | null = null
+    let raf = 0
+    const mid = (t: TouchList) => ({ x: (t[0]!.clientX + t[1]!.clientX) / 2, y: (t[0]!.clientY + t[1]!.clientY) / 2, d: Math.hypot(t[0]!.clientX - t[1]!.clientX, t[0]!.clientY - t[1]!.clientY) })
+    this.container.addEventListener('touchstart', e => {
+      if (this.mode !== 'pages' || !this.viewer?.pagesCount) return
+      if (e.touches.length === 2) { const m = mid(e.touches); pinch = { d0: Math.max(10, m.d), s0: this.viewer.currentScale, mx: m.x, my: m.y }; swipe = null }
+      else if (e.touches.length === 1) swipe = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, t: Date.now(), sl: this.container.scrollLeft }
+    }, { passive: true })
+    this.container.addEventListener('touchmove', e => {
+      if (!pinch || e.touches.length !== 2) return
+      e.preventDefault()
+      const m = mid(e.touches)
+      // two-finger pan moves with the fingers; the scale keeps the midpoint fixed
+      this.container.scrollLeft -= m.x - pinch.mx; this.container.scrollTop -= m.y - pinch.my
+      pinch.mx = m.x; pinch.my = m.y
+      const want = Math.min(this.fitBase * 6, Math.max(this.fitBase * 0.5, pinch.s0 * m.d / pinch.d0))
+      if (!raf) raf = window.requestAnimationFrame(() => { raf = 0; if (pinch) this.scaleTo(want, pinch.mx, pinch.my) })
+    }, { passive: false })
+    const end = (e: TouchEvent) => {
+      if (pinch && e.touches.length < 2) { pinch = null; this.wantScale = 0; this.noTapUntil = Date.now() + 450; return }
+      if (!swipe || e.touches.length || this.layout.scroll !== 'paged' || this.layout.zoom !== 1) { swipe = null; return }
+      const t = e.changedTouches[0]!, dx = t.clientX - swipe.x, dy = t.clientY - swipe.y
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - swipe.t < 700 && Math.abs(this.container.scrollLeft - swipe.sl) < 3) {
+        this.turn(turnFor(dx < 0 ? 'right' : 'left', this.layout.dir))
+        this.noTapUntil = Date.now() + 400
+      }
+      swipe = null
+    }
+    this.container.addEventListener('touchend', end, { passive: true })
+    this.container.addEventListener('touchcancel', () => { pinch = null; swipe = null; this.wantScale = 0 }, { passive: true })
+  }
+
+  /** Copy: join line breaks inside a paragraph, keep the paragraph breaks. */
+  private onCopy(e: ClipboardEvent) {
+    if (!this.hasSel() || !e.clipboardData) return
+    e.clipboardData.setData('text/plain', joinCopiedLines(this.containerEl.doc.getSelection()!.toString()))
+    e.preventDefault()
+  }
+
+  /** Slim page slider above the footer text (visible with the chrome) + a button for the thumbnail grid. */
+  private buildScrubber() {
+    const bar = el('div', 'octavo-pdf-scrub')
+    this.chrome.footer.insertBefore(bar, this.chrome.footerText)
+    bar.addEventListener('click', e => e.stopPropagation())
+    bar.addEventListener('pointerdown', e => e.stopPropagation())
+    const wrap = el('div', 'octavo-pdf-scrub-track', bar)
+    this.scrub = el('input', 'octavo-pdf-scrub-input', wrap) as HTMLInputElement
+    this.scrub.type = 'range'; this.scrub.min = '1'; this.scrub.step = '1'
+    this.scrub.setAttribute('aria-label', 'Go to page')
+    this.scrubBubble = el('div', 'octavo-pdf-scrub-bubble', wrap)
+    const place = () => {
+      const max = Number(this.scrub.max) || 1, v = Number(this.scrub.value)
+      this.scrubBubble.setText(String(v))
+      this.scrubBubble.setCssProps({ '--scrub-pos': `${max > 1 ? ((v - 1) / (max - 1)) * 100 : 0}%` })
+    }
+    this.scrub.addEventListener('input', () => { place(); bar.addClass('is-dragging'); this.chrome.show() })
+    this.scrub.addEventListener('change', () => {
+      bar.removeClass('is-dragging')
+      const from = this.page, to = Number(this.scrub.value)
+      if (to !== from) { this.goToPage(to); this.offerBack(from) }
+    })
+    iconButton(bar, 'layout-grid', 'All pages', () => this.panel.open('map'), 'octavo-pdf-scrub-grid')
   }
 
   async onUnloadFile() { await this.closeDoc() }
@@ -222,6 +510,12 @@ export class PdfView extends FileView {
     this.viewer = null
     this.textCache.clear()
     this.rawCache.clear()
+    this.tts?.dispose()
+    this.tts = null
+    this.boxCache.clear()
+    this.scannedCache.clear()
+    this.crop = null
+    window.clearTimeout(this.tapTimer)
     this.textIO?.disconnect()
     this.textView?.empty()
     this.mode = 'pages'
@@ -274,6 +568,7 @@ export class PdfView extends FileView {
     const items: any[] | undefined = tl?.textContentItems
     if (strs) this.textCache.set(n, { items: [...strs], eol: strs.map((_, i) => !!items?.filter((x: any) => 'str' in x)[i]?.hasEOL) })
     this.drawHighlights(n)
+    this.tts?.onTextLayer(n)
   }
 
   private async pageItems(n: number): Promise<{ items: string[]; eol: boolean[] }> {
@@ -325,7 +620,7 @@ export class PdfView extends FileView {
       copyLink: () => void this.copySelectionLink(),
       define: () => this.plugin.define(range.toString(), range.toString()),
       ask: () => void this.askAbout(range.toString()),
-      speak: () => { this.popover.hide(); Speaker.say(range.toString(), this.plugin.settings.tts) },
+      speak: () => { const got = this.selectionToPdf(); this.popover.hide(); if (got) { this.containerEl.doc.getSelection()?.removeAllRanges(); void this.readAloud().play(got.sel.page, got.sel.beginIndex, got.sel.beginOffset) } else Speaker.say(range.toString(), this.plugin.settings.tts) },
     })
   }
 
@@ -465,7 +760,7 @@ export class PdfView extends FileView {
     }
     for (const m of marks) for (const r of this.selectionRects(n, m.sel)) {
       const d = el('div', `octavo-pdf-hlmark ${m.cls}`, layer)
-      d.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--c:${m.color}`
+      d.setCssStyles({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` }); d.setCssProps({ '--c': m.color })
       d.onclick = e => { e.stopPropagation(); m.onClick(e) }
     }
   }
@@ -523,7 +818,7 @@ export class PdfView extends FileView {
     if (!layer || !rects.length) return
     for (const r of rects) {
       const d = el('div', 'octavo-pdf-flash', layer)
-      d.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`
+      d.setCssStyles({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` })
       window.setTimeout(() => d.remove(), 2200)
     }
     const pv = this.pageView(sel.page)
@@ -658,7 +953,7 @@ export class PdfView extends FileView {
       img.alt = ''
       // photos have lots of mid-tones; line drawings are mostly paper + ink. Only line art is inverted in dark mode.
       img.className = ink && mid / ink > 0.45 ? 'is-photo' : 'is-lineart'
-      img.style.width = `${Math.round((cw / scale) * 1.1)}px` // keep the figure's natural size relative to the text
+      img.setCssStyles({ width: `${Math.round((cw / scale) * 1.1)}px` }) // keep the figure's natural size relative to the text
       out.push({ top: b.top - (minY / scale), img })
       c2.width = c2.height = 0
     }
@@ -720,6 +1015,8 @@ export class PdfView extends FileView {
       text = `${ch ? `${Math.max(1, Math.round((left + 1) * perPage / 60))} min left in chapter · ` : ''}${Math.round((total - this.page) * perPage / 3600 * 10) / 10} h left`
     }
     this.chrome.footerText.setText(text)
+    this.scrub.max = String(total)
+    if (!this.scrub.parentElement?.parentElement?.hasClass('is-dragging')) this.scrub.value = String(this.page)
     this.chrome.title.setText(ch ? `${this.title} — ${ch.title}` : this.title)
     const bms: unknown = this.note ? this.plugin.library.getProps(this.note).bookmarks : null
     this.chrome.setBookmarked(Array.isArray(bms) && bms.includes(this.page))
@@ -778,14 +1075,36 @@ export class PdfView extends FileView {
   }
 
   private onClick(e: MouseEvent) {
+    if (Date.now() < this.noTapUntil) return
     if (this.hasSel() || (e.target as Element).closest('.octavo-pdf-hlmark, a, .annotationLayer section')) return
     if (this.popover.visible) { this.popover.hide(); return }
     if (this.panel.isOpen) { this.panel.close(); return }
+    if (Platform.isMobile && this.mode === 'pages') {
+      // a second tap within 300ms is a double-tap (zoom); single taps wait that long to be sure
+      const now = Date.now(), { clientX: x, clientY: y } = e
+      if (now - this.lastTap.t < 300 && Math.hypot(x - this.lastTap.x, y - this.lastTap.y) < 40) {
+        window.clearTimeout(this.tapTimer)
+        this.lastTap.t = 0
+        this.zoomToBlock(x, y)
+        return
+      }
+      this.lastTap = { t: now, x, y }
+      window.clearTimeout(this.tapTimer)
+      this.tapTimer = window.setTimeout(() => this.tapAt(x), 260)
+      return
+    }
+    this.tapAt(e.clientX)
+  }
+
+  /** Mobile: outer quarters turn (paged) or scroll a screen (vertical); the centre toggles the chrome. */
+  private tapAt(clientX: number) {
     const r = this.root.getBoundingClientRect()
-    const fx = (e.clientX - r.left) / r.width
+    const fx = (clientX - r.left) / r.width
     if (Platform.isMobile && (fx < 0.25 || fx > 0.75)) {
-      const dir = (fx < 0.25) !== this.plugin.settings.leftHanded ? -1 : 1
-      this.container.scrollBy({ top: dir * this.container.clientHeight * 0.9, behavior: 'smooth' })
+      const side = fx < 0.25 ? 'left' : 'right'
+      if (this.mode === 'pages' && this.layout.scroll === 'paged') return this.turn(turnFor(side, this.layout.dir, this.plugin.settings.leftHanded))
+      const dir = turnFor(side, 'ltr', this.plugin.settings.leftHanded)
+      ;(this.mode === 'text' ? this.textView : this.container).scrollBy({ top: dir * this.container.clientHeight * 0.9, behavior: 'smooth' })
       return
     }
     this.chrome.toggle()
@@ -794,11 +1113,11 @@ export class PdfView extends FileView {
   private onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, textarea, select, .octavo-panel')) return
     const mod = e.metaKey || e.ctrlKey
-    if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); this.viewer?.nextPage() }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); this.viewer?.previousPage() }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); this.turnSide(e.key === 'ArrowRight' ? 'right' : 'left') }
+    else if (e.key === 'PageDown' || e.key === 'PageUp') { e.preventDefault(); this.turn(e.key === 'PageDown' ? 1 : -1) }
     else if ((e.key === '=' || e.key === '+') && mod) { e.preventDefault(); this.zoomBy(1.15) }
     else if (e.key === '-' && mod) { e.preventDefault(); this.zoomBy(1 / 1.15) }
-    else if (e.key === '0' && mod) { e.preventDefault(); this.zoom = 'page-width'; this.fit() }
+    else if (e.key === '0' && mod) { e.preventDefault(); this.resetZoom() }
     else if (e.key === 'Escape') { if (!this.popover.visible && !this.panel.isOpen) this.focusMode.exit(); this.popover.hide(); this.panel.close() }
     else if ((e.key === 'h' || e.key === 'H') && this.hasSel()) { e.preventDefault(); void this.createHighlight(this.plugin.settings.defaultColor, 'highlight') }
     else if ((e.key === 'n' || e.key === 'N') && this.hasSel()) { e.preventDefault(); void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', true) }
@@ -815,16 +1134,26 @@ export class PdfView extends FileView {
     this.chrome.setBookmarked(next.includes(this.page))
   }
 
-  private async speakPage() {
-    if (speechSynthesis.speaking) { speechSynthesis.cancel(); this.chrome.setSpeaking(false); return }
-    const text = this.pageString(await this.pageItems(this.page)).text
-    if (!text.trim()) { new Notice('This page has no text layer. Octavo Cloud can OCR scanned PDFs.'); return }
-    const u = new SpeechSynthesisUtterance(text)
-    u.rate = this.plugin.settings.tts.rate
-    const v = Speaker.voice(this.plugin.settings.tts.voice); if (v) u.voice = v
-    u.onend = () => { this.chrome.setSpeaking(false); if (this.page < (this.doc?.numPages ?? 0)) { this.goToPage(this.page + 1); window.setTimeout(() => void this.speakPage(), 600) } }
-    this.chrome.setSpeaking(true)
-    speechSynthesis.speak(u)
+  private speakPage() { if (this.doc) this.readAloud().toggle() }
+
+  /** Sentence-by-sentence read-aloud (reading order, highlight, mini player); see readAloud.ts. */
+  private readAloud(): PdfReadAloudUi {
+    return this.tts ??= new PdfReadAloudUi(this.plugin, {
+      root: this.root,
+      pageCount: () => this.doc?.numPages ?? 0,
+      pageInput: async n => {
+        if (!this.doc) return null
+        const page = await this.doc.getPage(n)
+        let raw = this.rawCache.get(n)
+        if (!raw) { raw = (await page.getTextContent()).items.filter((it: any) => 'str' in it); this.rawCache.set(n, raw!) }
+        return { items: raw!, height: vp1h(page) }
+      },
+      spans: n => this.pageView(n)?.textLayer?.textLayer?.textDivs,
+      goToPage: n => this.goToPage(n),
+      currentPage: () => this.page,
+      sections: () => this.outline.filter(o => o.depth === 0).map(o => o.page),
+      setSpeaking: on => this.chrome.setSpeaking(on),
+    })
   }
 
   private moreMenu(e: MouseEvent) {
@@ -835,7 +1164,7 @@ export class PdfView extends FileView {
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
     m.addItem(i => i.setTitle('Zoom in').setIcon('zoom-in').onClick(() => this.zoomBy(1.2)))
     m.addItem(i => i.setTitle('Zoom out').setIcon('zoom-out').onClick(() => this.zoomBy(1 / 1.2)))
-    m.addItem(i => i.setTitle('Fit width').setIcon('maximize-2').onClick(() => { this.zoom = 'page-width'; this.fit() }))
+    m.addItem(i => i.setTitle('Fit (reset zoom)').setIcon('maximize-2').onClick(() => this.resetZoom()))
     m.addItem(i => i.setTitle('Go to page…').setIcon('hash').onClick(async () => {
       const v = await new TextPromptModal(this.app, 'Go to page', String(this.page), `1–${this.doc?.numPages}`).result()
       if (v && Number(v)) { const from = this.page; this.goToPage(Number(v)); this.offerBack(from) }
@@ -846,7 +1175,8 @@ export class PdfView extends FileView {
   }
 
   private renderPanel(tab: PanelTab, body: HTMLElement) {
-    if (tab === 'appearance') return renderAppearance(body, this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() }, { pdf: true })
+    if (tab === 'appearance') return renderAppearance(body, this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() },
+      { pdf: true, pdfLayout: { get: () => this.layout, set: p => this.setLayout(p) } })
     if (tab === 'toc') {
       if (!this.outline.length) el('div', 'octavo-empty', body, 'This PDF has no outline.')
       const cur = this.chapterOf(this.page)
