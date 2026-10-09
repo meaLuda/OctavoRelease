@@ -1,4 +1,4 @@
-import { Platform, getIconIds, loadPdfJs, type App } from 'obsidian'
+import { Platform, apiVersion, getIconIds, loadPdfJs, type App } from 'obsidian'
 
 /**
  * "Copy mobile diagnostics": what Octavo can and cannot reach on this device. Owners paste the report
@@ -13,7 +13,7 @@ export async function collectDiagnostics(app: App, version: string): Promise<str
   })
   add('origin', window.location.origin)
   add('resourcePathPrefix', (Platform as unknown as { resourcePathPrefix?: string }).resourcePathPrefix ?? 'n/a')
-  add('userAgent', navigator.userAgent)
+  add('obsidianApi', apiVersion)
   add('viewport', { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })
 
   const probe = document.body.createDiv()

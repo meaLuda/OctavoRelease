@@ -1,7 +1,7 @@
 {
   "id": "octavo",
   "name": "Octavo Reader",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "minAppVersion": "1.10.0",
   "description": "Ebook reader for EPUB, PDF, MOBI and CBZ: highlight and annotate books, save highlights as linked Markdown notes, and import Kindle, KOReader and Annotator highlights.",
   "author": "Munyala Eliud",
