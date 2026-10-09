@@ -87,7 +87,7 @@ export function mergeRows(lines: Line[]): Line[] {
   })
 }
 
-const PAGE_NO = /^[-–—(\[]?\s*(page\s*)?(\d{1,4}|[ivxlc]{1,6})(\s*(\/|of)\s*\d{1,4})?\s*[-–—)\]]?$/i
+const PAGE_NO = /^[-–—([]?\s*(page\s*)?(\d{1,4}|[ivxlc]{1,6})(\s*(\/|of)\s*\d{1,4})?\s*[-–—)\]]?$/i
 const normRunning = (s: string) => s.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim()
 
 /** Lines in the top two and bottom two rows of a page (where running heads, feet and folios live). */
@@ -303,7 +303,7 @@ export function sentences(text: string, locale?: string): Array<[number, number]
   if (Seg) {
     for (const s of new Seg(locale, { granularity: 'sentence' }).segment(text) as Iterable<{ index: number; segment: string }>) raw.push([s.index, s.index + s.segment.length])
   } else {
-    const re = /[.!?…]+["'”’)\]]*\s+(?=["“‘(\[]?[A-Z0-9])/g
+    const re = /[.!?…]+["'”’)\]]*\s+(?=["“‘([]?[A-Z0-9])/g
     let last = 0
     for (let m = re.exec(text); m; m = re.exec(text)) { raw.push([last, m.index + m[0].length]); last = m.index + m[0].length }
     if (last < text.length) raw.push([last, text.length])
@@ -489,7 +489,7 @@ export class PdfReadAloud {
   private inputs = new Map<number, Promise<PageInput | null>>()
   private paras = new Map<number, Promise<Para[]>>()
   private utts = new Map<number, Promise<Utterance[]>>()
-  private sleepTimer: ReturnType<typeof setTimeout> | null = null
+  private sleepTimer: number | null = null
   private sleepDue = false
   private sleepUntil = 0
   private sectionEnd = 0 // first page of the next section, 0 = none
@@ -579,14 +579,14 @@ export class PdfReadAloud {
   }
   /** Sleep after N minutes (finishes the sentence being read) or at the end of the current outline section. */
   setSleep(s: Sleep) {
-    if (this.sleepTimer) clearTimeout(this.sleepTimer)
+    if (this.sleepTimer) window.clearTimeout(this.sleepTimer)
     this.sleepTimer = null
     this.sleepDue = false
     this.sectionEnd = 0
     if (!s) return
     if ('minutes' in s) {
       this.sleepUntil = Date.now() + s.minutes * 60_000
-      this.sleepTimer = setTimeout(() => {
+      this.sleepTimer = window.setTimeout(() => {
         this.sleepTimer = null
         this.sleepDue = true
         if (this.state === 'paused') this.finish('sleep')
@@ -603,7 +603,7 @@ export class PdfReadAloud {
   private finish(reason: EndReason) {
     this.gen++
     this.o.engine.cancel()
-    if (this.sleepTimer) clearTimeout(this.sleepTimer)
+    if (this.sleepTimer) window.clearTimeout(this.sleepTimer)
     this.sleepTimer = null
     this.sleepDue = false
     this.sectionEnd = 0
