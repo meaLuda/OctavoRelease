@@ -1,4 +1,7 @@
-Octavo Reader 1.1.0 beta 5
+Octavo Reader 1.1.0 beta 6
+
+New in beta 6
+- PDF: no page sizing errors while a pane is minimised or collapsed.
 
 New in beta 5
 - PDFs fit the reading width by default, so print is easy to read; pages still turn one at a time (a tall page scrolls first, then turns). Whole page (Auto) and Page are still a choice per book.
