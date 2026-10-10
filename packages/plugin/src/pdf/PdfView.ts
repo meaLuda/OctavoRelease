@@ -265,6 +265,8 @@ export class PdfView extends FileView {
   private fit(opts: { resize?: boolean } = {}) {
     const v = this.viewer
     if (!v?.pagesCount) return
+    // a minimised or collapsed pane has no room to fit into (the sizes would go negative); refit when it returns
+    if (this.container.clientWidth < 120 || this.container.clientHeight < 160) return
     const L = this.layout, phone = Platform.isPhone
     const pv1 = this.pageView(this.page) ?? this.pageView(1)
     // Two pages only when the reader chose it for this book. Book pairing like Acrobat's cover page: page 1
