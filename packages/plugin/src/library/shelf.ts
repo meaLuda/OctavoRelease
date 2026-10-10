@@ -25,7 +25,7 @@ class ShelfView extends BasesView {
       const st = computeStreak(this.plugin.settings.stats.minutesByDay, goals.dailyMinutes, new Date(), goals.restDaysPerWeek)
       const head = root.createDiv({ cls: 'octavo-shelf-head' })
       const ring = head.createDiv({ cls: 'octavo-goal-ring' })
-      ring.style.setProperty('--p', String(Math.min(1, st.todayMinutes / goals.dailyMinutes)))
+      ring.setCssProps({ '--p': String(Math.min(1, st.todayMinutes / goals.dailyMinutes)) })
       ring.setAttribute('aria-label', `${st.todayMinutes} of ${goals.dailyMinutes} minutes today`)
       head.createDiv({ cls: 'octavo-goal-text', text: `${st.todayMinutes}/${goals.dailyMinutes} min today${st.current ? ` · ${st.current}-day streak` : ''}` })
       head.onclick = () => this.plugin.showGoal()
@@ -48,7 +48,7 @@ class ShelfView extends BasesView {
       else { cover.addClass('is-placeholder'); cover.createDiv({ cls: 'octavo-book-cover-title', text: String(fm.title ?? note.basename) }) }
       const progress = Number(fm.progress) || 0
       if (fm.status === 'finished') { const b = cover.createDiv({ cls: 'octavo-book-badge' }); setIcon(b, 'check') }
-      else if (progress > 0) cover.createDiv({ cls: 'octavo-book-progress' }).style.setProperty('--p', `${progress * 100}%`)
+      else if (progress > 0) cover.createDiv({ cls: 'octavo-book-progress' }).setCssProps({ '--p': `${progress * 100}%` })
       card.createDiv({ cls: 'octavo-book-title', text: String(fm.title ?? note.basename) })
       card.createDiv({ cls: 'octavo-book-meta', text: [fm.author, progress > 0 && fm.status !== 'finished' ? `${Math.round(progress * 100)}%` : null].filter(Boolean).join(' · ') })
       const open = (newTab: boolean) => {

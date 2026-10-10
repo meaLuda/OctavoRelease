@@ -52,3 +52,19 @@ export function formatPdfSubpath(sel: PdfSelection, color?: HighlightColor): str
 export function isHighlightColor(c: string | undefined): c is HighlightColor {
   return !!c && (HIGHLIGHT_COLORS as readonly string[]).includes(c)
 }
+
+/**
+ * PDF++ region subpath: `#page=N&rect=left,bottom,right,top` in PDF user-space points (origin bottom-left,
+ * rounded to whole points as PDF++ writes them). The rect is normalised so left ≤ right and bottom ≤ top.
+ */
+export function formatRectSubpath(page: number, rect: readonly [number, number, number, number], color?: HighlightColor): string {
+  const [x1, y1, x2, y2] = rect
+  const r = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)].map(n => Math.round(n))
+  return `#page=${page}&rect=${r.join(',')}${color ? `&color=${color}` : ''}`
+}
+
+/** `Book.pdf#page=3&rect=…` (a link target, alias removed) → path and subpath (with its `#`). */
+export function splitLinktext(linktext: string): { path: string; subpath: string } {
+  const i = linktext.indexOf('#')
+  return i < 0 ? { path: linktext, subpath: '' } : { path: linktext.slice(0, i), subpath: linktext.slice(i) }
+}

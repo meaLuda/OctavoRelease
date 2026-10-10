@@ -6,6 +6,7 @@ export const DEFAULT_MODELS = { openai: '', anthropic: 'claude-sonnet-5-5', olla
 export function aiConfigured(s: OctavoSettings): boolean {
   const a = s.ai
   if (a.provider === 'none') return false
+  if (a.provider === 'octavo') return !!s.cloud.token // signed in; the server checks the plan
   if (a.provider === 'ollama') return true
   if (a.provider === 'openai') return !!a.apiKey && !!a.model
   return !!a.apiKey
@@ -14,7 +15,8 @@ export function aiConfigured(s: OctavoSettings): boolean {
 /**
  * Bring-your-own-key AI. Network calls happen only when the user triggers an
  * AI action (Ask / Define), go straight to the provider the user configured,
- * and never through an Octavo server.
+ * and never through an Octavo server. Octavo AI (provider 'octavo', Cloud + AI)
+ * goes through CloudClient.ai() instead: see ./hosted.ts.
  */
 const ollamaBase = (s: OctavoSettings) => (s.ai.baseUrl || 'http://localhost:11434').replace(/\/$/, '')
 
@@ -33,6 +35,7 @@ export async function listOllamaModels(s: OctavoSettings): Promise<string[]> {
  */
 export async function askAI(s: OctavoSettings, prompt: string, onText?: (soFar: string) => void): Promise<string> {
   const a = s.ai
+  if (a.provider === 'octavo') throw new Error('Octavo AI answers through its own features (Define, Ask, Summarise)')
   if (a.provider === 'ollama') return askOllama(s, prompt, onText)
   if (a.provider === 'anthropic') {
     const res = await requestUrl({

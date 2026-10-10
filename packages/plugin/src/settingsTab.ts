@@ -5,6 +5,8 @@ import { THEMES } from './reader/themes'
 import { DEFAULT_MODELS, askAI, listOllamaModels } from './ai/ask'
 import { Notice } from 'obsidian'
 import { ImportModal } from './library/ImportModal'
+import { renderLibrarySettings } from './library/librarySettings'
+import { renderCopySettings } from './reader/copySettings'
 
 const TAP_LABELS: Record<TapAction, string> = { prev: 'Previous page', next: 'Next page', menu: 'Show controls', bookmark: 'Bookmark', toc: 'Contents', search: 'Search', none: 'Nothing' }
 
@@ -24,8 +26,9 @@ export class OctavoSettingTab extends PluginSettingTab {
       .addText(t => t.setValue(s.coversFolder).onChange(v => { s.coversFolder = v.trim() || 'Books/covers'; save() }))
     new Setting(c).setName('Open PDFs in Octavo').setDesc('Use Octavo instead of the built-in PDF viewer. Existing PDF++ links keep working.')
       .addToggle(t => t.setValue(s.openPdfInOctavo).onChange(v => { s.openPdfInOctavo = v; this.plugin.applyPdfRouting(); save() }))
-    new Setting(c).setName('Import highlights').setDesc('From Annotator, Elton, Weave, Kindle, KOReader or Readest.')
+    new Setting(c).setName('Import highlights').setDesc('From Annotator, Zotero, Elton, Weave, Kindle, KOReader or Readest.')
       .addButton(b => b.setButtonText('Import…').onClick(() => new ImportModal(this.app, this.plugin).open()))
+    renderLibrarySettings(c, this.plugin, () => this.display())
 
     new Setting(c).setName('Reading').setHeading()
     new Setting(c).setName('Theme').addDropdown(d => {
@@ -57,6 +60,8 @@ export class OctavoSettingTab extends PluginSettingTab {
     new Setting(c).setName('Auto-paste into last note').setDesc('Every new highlight is also inserted, with its link, into the note you last edited — read on one side, write on the other.')
       .addToggle(t => t.setValue(s.autoPaste).onChange(v => { s.autoPaste = v; save() }))
 
+    renderCopySettings(c, this.plugin, () => this.display())
+
     new Setting(c).setName('Read aloud').setHeading()
     new Setting(c).setName('Voices').setDesc('System voices are free and offline. Natural voices (Kokoro) need Octavo Cloud.')
       .addDropdown(d => d.addOption('system', 'System voices').addOption('cloud', 'Natural voices (Octavo Cloud)')
@@ -83,12 +88,23 @@ export class OctavoSettingTab extends PluginSettingTab {
     new Setting(c).setName('Log reading sessions to the daily note').setDesc('Adds a line like “📖 Book · 25 min · 40% → 52%” under a Reading heading.')
       .addToggle(t => t.setValue(s.dailyNoteLog).onChange(v => { s.dailyNoteLog = v; save() }))
 
-    new Setting(c).setName('AI (your own key)').setHeading()
-    c.createEl('p', { cls: 'setting-item-description', text: 'Optional. Requests go directly from this device to the provider you choose, only when you press Ask or Define.' })
-    new Setting(c).setName('Provider').addDropdown(d => d
-      .addOption('none', 'Off').addOption('anthropic', 'Anthropic').addOption('openai', 'OpenAI-compatible').addOption('ollama', 'Ollama (local)')
+    new Setting(c).setName('AI').setHeading()
+    c.createEl('p', { cls: 'setting-item-description', text: 'Optional. AI runs only when you press Define, Ask, Summarise or make flashcards. With your own key, requests go straight from this device to that provider. Octavo AI is included with Cloud + AI and needs no key.' })
+    new Setting(c).setName('AI provider').addDropdown(d => d
+      .addOption('none', 'Off').addOption('octavo', 'Octavo AI (Cloud + AI)').addOption('anthropic', 'Your own key: Anthropic').addOption('openai', 'Your own key: OpenAI-compatible').addOption('ollama', 'Ollama (local)')
       .setValue(s.ai.provider).onChange(v => { s.ai.provider = v as typeof s.ai.provider; save(); this.display() }))
-    if (s.ai.provider !== 'none') {
+    if (s.ai.provider === 'octavo') {
+      const tier = this.plugin.cloud.ent?.tier
+      const me = this.plugin.cloud.me
+      const status = !this.plugin.cloud.signedIn ? 'Sign in under Cloud below to use Octavo AI.'
+        : tier && tier !== 'cloud_ai' ? 'Your plan does not include Octavo AI. Upgrade to Cloud + AI below, or choose your own key.'
+          : me?.ai ? `${me.ai.creditsLeft} credits left this month. Define and Explain use 1 credit, Summarise, Ask and Flashcards 2, a chapter summary 6. Saved answers are free.`
+            : 'Define and Explain use 1 credit, Summarise, Ask and Flashcards 2, a chapter summary 6.'
+      new Setting(c).setName('Octavo AI').setDesc(status)
+      new Setting(c).setName('Allow DeepSeek fallback')
+        .setDesc('Octavo AI uses Google Gemini. If Gemini is down, DeepSeek answers instead; DeepSeek processes text on servers in China. Turn off to never send text to DeepSeek (you may then see "AI temporarily unavailable").')
+        .addToggle(t => t.setValue(s.ai.allowFallback !== false).onChange(v => { s.ai.allowFallback = v; save() }))
+    } else if (s.ai.provider !== 'none') {
       if (s.ai.provider !== 'ollama') new Setting(c).setName('API key').addText(t => { t.inputEl.type = 'password'; t.setValue(s.ai.apiKey).onChange(v => { s.ai.apiKey = v.trim(); save() }) })
       if (s.ai.provider === 'ollama') {
         const ms = new Setting(c).setName('Model').setDesc('Models installed in your local Ollama. Everything stays on this machine.')
@@ -104,7 +120,8 @@ export class OctavoSettingTab extends PluginSettingTab {
           d.onChange(v => { s.ai.model = v; save() })
         })
       } else {
-        new Setting(c).setName('Model').setDesc(s.ai.provider === 'openai' ? 'Required.' : `Default: ${DEFAULT_MODELS[s.ai.provider]}`)
+        const provider = s.ai.provider
+        new Setting(c).setName('Model').setDesc(provider === 'openai' ? 'Required.' : `Default: ${DEFAULT_MODELS[provider]}`)
           .addText(t => t.setValue(s.ai.model).onChange(v => { s.ai.model = v.trim(); save() }))
       }
       new Setting(c).setName('Base URL').setDesc(s.ai.provider === 'ollama' ? 'Default http://localhost:11434. On a phone, use your computer\'s LAN address (e.g. http://192.168.1.20:11434) with OLLAMA_HOST=0.0.0.0.' : 'Leave empty for the default endpoint.')
@@ -122,6 +139,8 @@ export class OctavoSettingTab extends PluginSettingTab {
 
     new Setting(c).setName('Cloud').setHeading()
     c.createEl('p', { cls: 'setting-item-description', text: 'Optional paid service: keep books outside your vault (works with Obsidian Sync Standard\'s 5 MB limit), send books by email, OCR for scanned PDFs, natural read-aloud voices and KOReader sync. Octavo itself is free and works fully without it.' })
+    new Setting(c).setName('Cloud tips in the reader').setDesc('A small, dismissible hint at most once per book: a book over Obsidian Sync\'s 5 MB limit, a scanned PDF, or read-aloud with the system voice.')
+      .addToggle(t => t.setValue(s.cloudPrompts).onChange(v => { s.cloudPrompts = v; save() }))
     this.plugin.cloud.renderSettings(c, () => this.display())
   }
 }

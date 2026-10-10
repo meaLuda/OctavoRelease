@@ -183,9 +183,10 @@ button.octavo-swatch-purple, .octavo-swatch-purple { background-color: #b48cff !
 .octavo-pdf .pdfViewer .spread .page { margin: 12px 8px; }
 .octavo-pdf .textLayer { -webkit-user-select: text !important; user-select: text !important; }
 .octavo-pdf .textLayer ::selection { background: rgba(0, 120, 255, .28); }
-/* scanned pages are images: pageColors can't recolour them, so invert them in dark mode */
-.octavo-dark[data-pdf-dark="invert-except-images"] .page.is-scanned canvas { filter: invert(.88) hue-rotate(180deg); }
-.octavo-dark[data-pdf-dark="sepia"] .page.is-scanned canvas { filter: invert(.85) sepia(.4) hue-rotate(180deg); }
+/* dark mode: scanDark.ts recolours text and keeps photos on every page;
+   this invert is only the fallback for a canvas it hasn't processed (e.g. pdf.js zoom detail layers). */
+.octavo-dark[data-pdf-dark="invert-except-images"] .page canvas:not(.octavo-recoloured) { filter: invert(.88) hue-rotate(180deg); }
+.octavo-dark[data-pdf-dark="sepia"] .page canvas:not(.octavo-recoloured) { filter: invert(.85) sepia(.4) hue-rotate(180deg); }
 .octavo-pdf-hl { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .octavo-pdf-hlmark { position: absolute; pointer-events: auto; cursor: pointer; background: var(--c); opacity: .38; mix-blend-mode: multiply; border-radius: 3px; }
 .octavo-dark .octavo-pdf-hlmark { mix-blend-mode: screen; opacity: .45; }
@@ -292,6 +293,40 @@ button.octavo-swatch-purple, .octavo-swatch-purple { background-color: #b48cff !
 .octavo-lib-chip.is-active .octavo-lib-chip-n { color: inherit; opacity: .6; }
 .octavo-lib-chip-icon { display: inline-flex; --icon-size: 14px; }
 .octavo-lib .octavo-lib-chip.is-ghost { border-style: dashed; padding: 4px 8px; color: var(--text-muted); }
+.octavo-lib .octavo-lib-chip.is-smart .octavo-lib-chip-icon { color: var(--interactive-accent); }
+.octavo-lib .octavo-lib-chip.is-smart { border-style: dotted; }
+.octavo-lib .octavo-lib-chip.is-smart.is-active .octavo-lib-chip-icon { color: inherit; }
+.octavo-lib-chips:has(+ .octavo-lib-filters) { margin-bottom: var(--size-4-2); }
+
+/* Filter bar: one compact button, active filters as removable pills (wraps on phones). */
+.octavo-lib-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: var(--size-4-6); min-width: 0; }
+.octavo-lib .octavo-lib-filter-btn, .octavo-lib .octavo-lib-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: auto; min-height: 28px; padding: 2px 10px; border-radius: 999px;
+  background: transparent; box-shadow: none; border: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller); color: var(--text-muted); max-width: 100%;
+}
+.octavo-lib .octavo-lib-filter-btn:hover, .octavo-lib .octavo-lib-pill:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.octavo-lib .octavo-lib-filter-btn.is-active { color: var(--text-normal); border-color: var(--interactive-accent); }
+.octavo-lib .octavo-lib-pill:not(.is-action) { background: var(--background-modifier-hover); color: var(--text-normal); border-color: transparent; }
+.octavo-lib-pill-k { color: var(--text-faint); }
+.octavo-lib-pill-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
+.octavo-lib-pill-x { display: inline-flex; --icon-size: 12px; color: var(--text-faint); }
+.octavo-lib .octavo-lib-pill.is-action { border-style: dashed; }
+.octavo-lib .octavo-lib-pill.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border: none; }
+.is-phone .octavo-lib .octavo-lib-filter-btn, .is-phone .octavo-lib .octavo-lib-pill { min-height: 32px; }
+
+/* Facet picker (folder tree, tags, series, authors, formats) */
+.octavo-facet-item { display: flex; align-items: baseline; gap: 8px; }
+.octavo-facet-item.is-active .octavo-facet-name { font-weight: var(--font-semibold); color: var(--interactive-accent); }
+.octavo-facet-item.is-active .octavo-facet-name::before { content: '✓ '; }
+.octavo-facet-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.octavo-facet-path { flex: 1 1 auto; min-width: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.octavo-facet-n { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: var(--font-ui-smaller); }
+.octavo-depth-1 { padding-left: 16px; } .octavo-depth-2 { padding-left: 32px; } .octavo-depth-3 { padding-left: 48px; }
+.octavo-depth-4, .octavo-depth-5, .octavo-depth-6 { padding-left: 64px; }
+
+/* Cloud library grouped by collection */
+.octavo-cloud-library .octavo-cloud-group { margin-top: var(--size-4-4); }
 
 .octavo-lib-grid.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 150px), 1fr)); gap: 28px 22px; }
 .octavo-lib-card { cursor: pointer; outline: none; min-width: 0; }
@@ -462,3 +497,68 @@ body.is-phone:not(.octavo-immersive) .octavo-tts-bar { bottom: calc(var(--navbar
 @keyframes octavo-slide-r { from { transform: translateX(28%); opacity: .4; } to { transform: none; opacity: 1; } }
 @keyframes octavo-slide-l { from { transform: translateX(-28%); opacity: .4; } to { transform: none; opacity: 1; } }
 .is-mobile .octavo-pdf .octavo-panel { top: calc(var(--octavo-topbar-h, 45px) + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))); }
+
+/* Octavo Cloud hint: slim, dismissible, just above the footer so it never covers the text (never a modal) */
+.octavo-cloud-banner {
+  position: absolute; left: 50%; transform: translateX(-50%); z-index: 6;
+  bottom: 52px; max-width: calc(100% - 32px); width: max-content; transition: opacity .4s ease;
+  display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px;
+  font-size: var(--font-ui-small); color: var(--text-normal);
+  background: var(--background-primary); border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m); box-shadow: var(--shadow-s);
+}
+.octavo-cloud-banner-icon { display: inline-flex; color: var(--interactive-accent); --icon-size: 16px; flex: none; }
+.octavo-cloud-banner-text { flex: 1 1 auto; min-width: 0; }
+.octavo-cloud-banner button { flex: none; }
+.octavo-cloud-banner .octavo-cloud-banner-close { padding: 4px; }
+.is-mobile .octavo-cloud-banner { bottom: calc(56px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); flex-wrap: wrap; }
+.octavo-cloud-banner.is-fading { opacity: 0; }
+
+/* Highlight tags */
+.octavo-hl-tags { margin-top: 6px; }
+.octavo-hl-tagline { margin-top: 4px; font-size: var(--font-ui-smaller); color: var(--text-accent); }
+.octavo-tag-input { width: 100%; }
+
+/* Settings: account usage meters and lists */
+.octavo-account-usage { padding: 0 0 12px; border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 4px; }
+.octavo-meters { display: grid; gap: 6px; margin-top: 8px; max-width: 420px; }
+.octavo-meter { display: grid; grid-template-columns: 5.5em 1fr auto; align-items: center; gap: 10px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.octavo-meter-bar { height: 6px; border-radius: 999px; background: var(--background-modifier-border); overflow: hidden; }
+.octavo-meter-fill { height: 100%; width: var(--octavo-meter, 0%); border-radius: inherit; background: var(--interactive-accent); }
+.octavo-meter-fill.is-high { background: var(--text-error); }
+.octavo-meter-value { font-variant-numeric: tabular-nums; }
+.octavo-settings-list { padding-left: var(--size-4-4, 16px); border-left: 2px solid var(--background-modifier-border); margin-bottom: 8px; }
+
+/* New collection modal */
+.octavo-col-name, .octavo-col-filter { width: 100%; margin-bottom: 8px; }
+.octavo-col-msg { color: var(--text-muted); font-size: var(--font-ui-smaller); min-height: 1em; margin-bottom: 6px; }
+.octavo-col-label { font-weight: 600; margin: 6px 0; }
+.octavo-col-list { max-height: 45vh; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); padding: 4px; }
+.octavo-col-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-s); cursor: pointer; }
+.octavo-col-row:hover { background: var(--background-modifier-hover); }
+.octavo-col-row.is-hidden { display: none; }
+.octavo-col-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.octavo-col-author { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: nowrap; }
+
+/* ── PDF area (region) capture, region embeds in notes, PDF hover previews ── */
+.octavo-pdf.is-area-select .octavo-pdf-container { cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+.octavo-pdf.is-area-select .textLayer, .octavo-pdf.is-area-select .annotationLayer, .octavo-pdf.is-area-select .octavo-pdf-hl { pointer-events: none; }
+.octavo-pdf-area { position: absolute; z-index: 5; pointer-events: none; border: 2px dashed var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); border-radius: 2px; }
+.octavo-pdf-area.is-done { border-style: solid; }
+.octavo-pdf-area.is-flash { border-style: solid; animation: octavo-area-flash 2.5s ease-out forwards; }
+@keyframes octavo-area-flash { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+
+.internal-embed.octavo-region-host > :not(.octavo-region-embed) { display: none !important; }
+.internal-embed.octavo-region-host { display: block; width: auto; height: auto !important; min-height: 0; } /* core sets an inline height on PDF embeds */
+.octavo-region-embed { display: inline-block; max-width: 100%; cursor: pointer; line-height: 0; border-radius: var(--radius-s); overflow: hidden; box-shadow: 0 0 0 1px var(--background-modifier-border); }
+.octavo-region-embed:focus-visible { outline: 2px solid var(--interactive-accent); }
+.octavo-region-canvas { width: var(--octavo-region-w, 100%); max-width: 100%; height: auto; display: block; }
+.octavo-region-embed.is-hover { line-height: normal; display: block; max-height: 60vh; overflow: auto; color: var(--text-muted); font-size: var(--font-ui-small); box-shadow: none; }
+.popover.hover-popover.octavo-pdf-hover { display: flex; flex-direction: column; align-items: stretch; height: auto; max-height: 70vh; width: auto; max-width: min(600px, 92vw); padding: var(--size-4-2); }
+.octavo-pdf-hover-title { font-size: var(--font-ui-small); color: var(--text-muted); margin-bottom: var(--size-4-1); }
+
+/* Settings: Copy formats / Export highlights template editors */
+.octavo-template-setting { align-items: flex-start; flex-wrap: wrap; }
+.octavo-template-setting .setting-item-control { flex: 1 1 100%; justify-content: flex-start; }
+.octavo-template-input { width: 100%; min-height: 4.5em; font-family: var(--font-monospace); font-size: var(--font-smaller); }
+.octavo-citekey-hint { margin: 0.5em 0 1em; }

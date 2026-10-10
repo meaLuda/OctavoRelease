@@ -1,22 +1,29 @@
 import { FileView, Menu, Notice, Platform, TFile, WorkspaceLeaf, loadPdfJs, moment } from 'obsidian'
 import { besideLeaf, canPopout } from '../platform'
 import {
-  isJunkTitle, cleanBookName, normalizeAuthors, tidyTitle, bookIdFromBytes, findQuote, makeQuote, newHighlightId, parseSubpath, formatPdfSubpath,
+  isJunkTitle, cleanBookName, normalizeAuthors, tidyTitle, bookIdFromBytes, findQuote, makeQuote, newHighlightId, parseSubpath, formatPdfSubpath, formatRectSubpath, pageFromLabel,
   type Highlight, type HighlightColor, type ParsedHighlight, type PdfSelection,
 } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import type { Backlink } from '../library/BookLibrary'
-import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, type PanelTab } from '../reader/ui'
+import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook } from '../reader/appearance'
 import { fontStack } from '../reader/themes'
 import { COLOR_CSS } from '../reader/colors'
 import { Speaker } from '../reader/speech'
 import { PdfReadAloudUi } from './readAloudUi'
 import { FocusMode } from '../reader/focus'
-import { TextPromptModal } from '../reader/modals'
+import { TextPromptModal, TagPromptModal } from '../reader/modals'
+import { filterByTags } from '../reader/tags'
+import { maybeCloudPrompt } from '../reader/cloudPrompt'
+import { showCopyMenu, type CopySource } from '../reader/copy'
 import { ensurePdfjs, openPdfDocument, PDF_ASSETS } from './source'
-import { mergeLines, imageCoverage } from './geometry'
+import { mergeLines, imageCoverage, imageRects } from './geometry'
+import { recolourScan } from './scanDark'
 import { reflow, figureBands, continues } from './reflow'
+import { AreaSelect, type AreaPick } from './areaSelect'
+import { viewportToPdfRect, pdfRectToViewport, footerPage, pageRef, pageLabel, hasOwnLabel, resolvePageInput, type PdfRect } from './region'
+import { renderRegion } from './regionRender'
 import {
   resolveLayout, pruneLayouts, turnFor, clampZoom, effectiveFit, useSpread, inkBox, cropBox, isBleed, sameSize, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, joinCopiedLines,
   type Box, type ResolvedLayout,
@@ -78,6 +85,13 @@ export class PdfView extends FileView {
   private textIO: IntersectionObserver | null = null
   private rawCache = new Map<number, any[]>()
   private tts: PdfReadAloudUi | null = null
+  /** The open file is an Octavo Cloud placeholder. */
+  private isStub = false
+  /** Tag filter in the highlights panel (lower-case), kept while the PDF is open. */
+  private tagFilter = new Set<string>()
+  /** Printed page labels from the PDF (e.g. "xii", "42"), index = physical page − 1; null when it has none. */
+  private labels: (string | null)[] | null = null
+  private area!: AreaSelect
 
   constructor(leaf: WorkspaceLeaf, private plugin: OctavoPlugin) { super(leaf); this.navigation = true }
   getViewType() { return PDF_VIEW }
@@ -121,6 +135,7 @@ export class PdfView extends FileView {
     })
     this.container.addEventListener('copy', e => this.onCopy(e))
     this.wireTouch()
+    this.area = new AreaSelect(this.root, this.container, p => this.onAreaPicked(p), on => { if (on) { this.popover.hide(); this.chrome.hide() } })
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
     this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
@@ -143,6 +158,8 @@ export class PdfView extends FileView {
       const { lib, viewer } = await ensurePdfjs(loadPdfJs)
       this.pdfjs = lib; this.viewerLib = viewer
       const cloud = await this.plugin.cloud.resolveStub(file).catch(e => { new Notice((e as Error).message); return null })
+      this.isStub = !!cloud
+      this.tagFilter.clear()
       if (cloud) {
         this.bookId = await bookIdFromBytes(new Uint8Array(await cloud.slice(0, 1024 * 1024).arrayBuffer()), cloud.size)
         this.doc = await lib.getDocument({ ...PDF_ASSETS, data: new Uint8Array(await cloud.arrayBuffer()), isEvalSupported: false }).promise
@@ -160,6 +177,7 @@ export class PdfView extends FileView {
       const author = normalizeAuthors(meta?.info?.Author) ?? cleanBookName(file.name).author
       ;(this.leaf as any).updateHeader?.()
       this.note = await this.plugin.library.ensureNote(file, { id: this.bookId, title: this.title, author, format: 'pdf' })
+      this.labels = await this.doc.getPageLabels().catch(() => null)
       await this.loadOutline()
       await this.loadHighlights()
       this.refreshBacklinks()
@@ -175,6 +193,7 @@ export class PdfView extends FileView {
       this.session = { start: Date.now(), from: this.fraction(), highlights: 0 }
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
+      void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size, isStub: this.isStub })
     } catch (e) {
       console.error('Octavo: failed to open PDF', e)
       loading.setText(`Could not open this PDF: ${(e as Error).message ?? e}`)
@@ -194,9 +213,9 @@ export class PdfView extends FileView {
     const eventBus = new V.EventBus()
     const linkService = new V.PDFLinkService({ eventBus, externalLinkTarget: 2 })
     const findController = new V.PDFFindController({ eventBus, linkService })
-    // Native "smart invert": pdf.js recolours text and vector art, photos keep their colours.
-    const pageColors = dark && s.pdfDark === 'invert-except-images' ? { background: '#1e1e1e', foreground: '#d6d6d6' }
-      : dark && s.pdfDark === 'sepia' ? { background: '#2b251c', foreground: '#d8c8a8' } : null
+    // No pdf.js pageColors: it recolours greyscale photos stored as image masks into negatives.
+    // Dark mode is applied per page after rendering instead (darkenPage), which keeps photos as photos.
+    const pageColors = null
     const viewer = new V.PDFViewer({
       container: this.container, viewer: inner, eventBus, linkService, findController,
       textLayerMode: 1, annotationMode: this.pdfjs.AnnotationMode?.ENABLE ?? 1,
@@ -234,7 +253,7 @@ export class PdfView extends FileView {
       this.saveTimer = window.setTimeout(() => void this.savePosition(), 2000)
     })
     eventBus.on('textlayerrendered', ({ pageNumber }: { pageNumber: number }) => this.onTextLayer(pageNumber))
-    eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => { void this.markScanned(pageNumber); void this.checkCrop(pageNumber) })
+    eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => { void this.markScanned(pageNumber).then(() => this.darkenPage(pageNumber)); void this.checkCrop(pageNumber) })
     viewer.setDocument(this.doc)
     linkService.setDocument(this.doc, null)
   }
@@ -515,6 +534,8 @@ export class PdfView extends FileView {
     this.boxCache.clear()
     this.scannedCache.clear()
     this.crop = null
+    this.labels = null
+    this.area?.cancel()
     window.clearTimeout(this.tapTimer)
     this.textIO?.disconnect()
     this.textView?.empty()
@@ -539,6 +560,7 @@ export class PdfView extends FileView {
     const from = this.page
     this.goToPage(page)
     if (sp.type === 'selection') this.whenTextLayer(page, () => this.flashSelection(sp.selection))
+    if (sp.type === 'rect') this.whenTextLayer(page, () => this.flashRect(page, sp.rect))
     if (from !== page) this.offerBack(from)
   }
 
@@ -590,6 +612,7 @@ export class PdfView extends FileView {
   }
 
   private scannedCache = new Map<number, boolean>()
+  private imageRectsCache = new Map<number, [number, number, number, number][]>()
   /** A page is "scanned" when one raster image covers most of it (OCR text on top doesn't change that). */
   private async markScanned(n: number) {
     const pv = this.pageView(n)
@@ -601,8 +624,37 @@ export class PdfView extends FileView {
       const vp = page.getViewport({ scale: 1 })
       scanned = imageCoverage(ops.fnArray, ops.argsArray, this.pdfjs.OPS, vp.width, vp.height) >= 0.6
       this.scannedCache.set(n, scanned)
+      this.imageRectsCache.set(n, imageRects(ops.fnArray, ops.argsArray, this.pdfjs.OPS))
     }
     pv.div.toggleClass('is-scanned', scanned)
+    if (scanned && this.file) void maybeCloudPrompt(this.plugin, this.root, 'scan', this.file, this.bookId, { isStub: this.isStub })
+  }
+
+  /** Dark mode: recolour paper and ink, keep photos as photos (pdf.js pageColors and CSS invert made them negatives). */
+  private darkenPage(n: number) {
+    const pv = this.pageView(n), s = this.plugin.settings
+    const canvas = pv?.canvas as HTMLCanvasElement | undefined
+    const colors = s.pdfDark === 'invert-except-images' ? { background: '#1e1e1e', foreground: '#d6d6d6', photoDim: 0.85 }
+      : s.pdfDark === 'sepia' ? { background: '#2b251c', foreground: '#d8c8a8', photoDim: 0.8 } : null
+    if (!canvas?.width || !colors || !this.containerEl.doc.body.hasClass('theme-dark') || canvas.hasClass('octavo-recoloured')) return
+    try {
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!ctx) return
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const scanned = !!this.scannedCache.get(n)
+      // born-digital page: exact image boxes from the PDF, PDF user space → viewport px → canvas px
+      const k = canvas.width / pv.viewport.width
+      const images = scanned ? undefined : (this.imageRectsCache.get(n) ?? []).map(r => {
+        const [a, b, c, d] = pv.viewport.convertToViewportRectangle(r) as number[]
+        return {
+          x0: Math.max(0, Math.floor(Math.min(a!, c!) * k)), y0: Math.max(0, Math.floor(Math.min(b!, d!) * k)),
+          x1: Math.min(canvas.width, Math.ceil(Math.max(a!, c!) * k)), y1: Math.min(canvas.height, Math.ceil(Math.max(b!, d!) * k)),
+        }
+      }).filter(b => b.x1 - b.x0 > 8 && b.y1 - b.y0 > 8)
+      recolourScan(img.data, canvas.width, canvas.height, { ...colors, scanned, images })
+      ctx.putImageData(img, 0, 0)
+      canvas.addClass('octavo-recoloured')
+    } catch (e) { console.warn('Octavo: scan recolour failed, using invert', e) }
   }
 
   private hasSel(): boolean {
@@ -617,11 +669,52 @@ export class PdfView extends FileView {
       color: c => void this.createHighlight(c, 'highlight'),
       underline: () => void this.createHighlight(this.plugin.settings.defaultColor, 'underline'),
       note: () => void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', true),
+      tags: () => void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', false, true),
       copyLink: () => void this.copySelectionLink(),
+      copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(), () => this.popover.hide()),
       define: () => this.plugin.define(range.toString(), range.toString()),
       ask: () => void this.askAbout(range.toString()),
+      summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { const got = this.selectionToPdf(); this.popover.hide(); if (got) { this.containerEl.doc.getSelection()?.removeAllRanges(); void this.readAloud().play(got.sel.page, got.sel.beginIndex, got.sel.beginOffset) } else Speaker.say(range.toString(), this.plugin.settings.tts) },
     })
+  }
+
+  // ───── for AI features (summarise chapter, flashcards) ─────
+  get bookNote(): TFile | null { return this.note }
+  get bookTitle(): string { return this.title }
+
+  /** A highlight, or the current selection, for "Copy as…" / "Copy citation" (reader/copy.ts). */
+  async copySource(h?: Highlight): Promise<CopySource | null> {
+    if (!this.file) return null
+    const base = { book: this.file, note: this.note, title: this.title }
+    if (h) {
+      const page = h.anchor.pdf?.page ?? pageFromLabel(h.label)
+      return { ...base, text: h.anchor.quote.exact, subpath: h.anchor.pdf ? formatPdfSubpath(h.anchor.pdf, h.color) : page ? `#page=${page}` : '', label: h.label, page, color: h.color, comment: h.note }
+    }
+    const got = this.selectionToPdf()
+    if (!got) return null
+    const page = got.sel.page
+    return { ...base, text: joinCopiedLines(got.text), subpath: formatPdfSubpath(got.sel), page, label: [this.chapterOf(page)?.title, `p. ${page}`].filter(Boolean).join(' · ') }
+  }
+
+  /** The outline chapter around the current page (or the next 10 pages without an outline), as plain text. */
+  async chapterForAi(): Promise<{ title: string; text: string } | null> {
+    if (!this.doc) return null
+    const ch = this.chapterOf(this.page)
+    const start = ch?.start ?? this.page
+    const end = Math.min(ch?.end ?? this.page + 9, start + 59, this.doc.numPages)
+    const pages: string[] = []
+    let size = 0
+    for (let n = start; n <= end && size < 120_000; n++) {
+      const t = this.pageString(await this.pageItems(n)).text.trim()
+      pages.push(t)
+      size += t.length
+    }
+    return { title: ch?.title || `${this.title}, pages ${start} to ${end}`, text: pages.join('\n\n') }
+  }
+
+  highlightsForAi(): Array<{ text: string; note?: string }> {
+    return [...this.highlights.values()].map(h => ({ text: h.anchor.quote.exact, note: h.note })).filter(h => h.text.trim())
   }
 
   private async askAbout(text: string) {
@@ -674,19 +767,24 @@ export class PdfView extends FileView {
     return null
   }
 
-  private async createHighlight(color: HighlightColor, style: 'highlight' | 'underline', withNote = false) {
+  private async createHighlight(color: HighlightColor, style: 'highlight' | 'underline', withNote = false, withTags = false) {
     if (!this.file || !this.note) return
     const got = this.selectionToPdf()
     if (!got) return
     const h: Highlight = {
       id: newHighlightId(), color, style, created: new Date().toISOString(),
-      label: [this.chapterOf(got.sel.page)?.title, `p. ${got.sel.page}`].filter(Boolean).join(' · '),
+      label: [this.chapterOf(got.sel.page)?.title, pageRef(this.labels, got.sel.page)].filter(Boolean).join(' · '),
       anchor: { pdf: got.sel, quote: await this.quoteOn(got.sel) },
     }
     if (withNote) {
       const n = await new TextPromptModal(this.app, 'Note', '', 'Add a note to this highlight').result()
       if (n === null) return
       h.note = n || undefined
+    }
+    if (withTags) {
+      const tags = await new TagPromptModal(this.app, []).result()
+      if (tags === null) return
+      h.tags = tags.length ? tags : undefined
     }
     this.containerEl.doc.getSelection()?.removeAllRanges()
     this.popover.hide()
@@ -700,7 +798,10 @@ export class PdfView extends FileView {
   private async copySelectionLink() {
     const got = this.selectionToPdf()
     if (!got || !this.file || !this.note) return
-    const link = this.app.fileManager.generateMarkdownLink(this.file, this.note.path, formatPdfSubpath(got.sel), got.text.slice(0, 60).replace(/\s+/g, ' ')).replace(/^!/, '')
+    const snippet = got.text.slice(0, 60).replace(/\s+/g, ' ')
+    // the link keeps the physical page (PDF++ grammar); the alias shows the printed one when the book has its own numbering
+    const alias = hasOwnLabel(this.labels, got.sel.page) ? `${snippet} (${pageRef(this.labels, got.sel.page)})` : snippet
+    const link = this.app.fileManager.generateMarkdownLink(this.file, this.note.path, formatPdfSubpath(got.sel), alias).replace(/^!/, '')
     await navigator.clipboard.writeText(link)
     new Notice('Link copied')
     this.popover.hide()
@@ -794,7 +895,9 @@ export class PdfView extends FileView {
       color: c => void this.updateHighlight(h, { color: c, style: 'highlight' }),
       underline: () => void this.updateHighlight(h, { style: h.style === 'underline' ? 'highlight' : 'underline' }),
       note: async () => { const n = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Note').result(); if (n !== null) await this.updateHighlight(h, { note: n || undefined }) },
+      tags: async () => { this.popover.hide(); const t = await new TagPromptModal(this.app, h.tags ?? []).result(); if (t !== null) await this.updateHighlight(h, { tags: t.length ? t : undefined }) },
       copyLink: async () => { await navigator.clipboard.writeText(this.plugin.library.linkFor(this.file!, this.note!, h)); new Notice('Link copied'); this.popover.hide() },
+      copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(h), () => this.popover.hide()),
       define: () => this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
       ask: () => void this.askAbout(h.anchor.quote.exact),
       speak: () => { this.popover.hide(); Speaker.say(h.anchor.quote.exact, this.plugin.settings.tts) },
@@ -810,6 +913,100 @@ export class PdfView extends FileView {
     this.popover.hide()
     this.redrawAll()
     await this.plugin.library.saveHighlight(this.file, this.note, next)
+  }
+
+  // ───────────────────────── area (region) capture ─────────────────────────
+
+  /** "Select area": drag a rectangle over a page, then copy it as a PDF++ embed or an image, or add it to the book note. */
+  toggleAreaSelect() {
+    if (this.area.active) { this.area.cancel(); return }
+    if (this.mode !== 'pages') { new Notice('Switch to page view to select an area'); return }
+    this.area.start()
+    new Notice('Drag over the page to select an area (Esc cancels)', 3000)
+  }
+
+  get areaSelecting() { return this.area?.active ?? false }
+
+  /** The drag (page-canvas CSS px) → PDF++ rect in PDF points, through the page's current pdf.js viewport. */
+  private pickToRect(p: AreaPick): PdfRect | null {
+    const vp = this.pageView(p.pageNumber)?.viewport
+    if (!vp?.transform || !p.width) return null
+    const sx = vp.width / p.width, sy = vp.height / p.height
+    return viewportToPdfRect(vp.transform, p.box.x * sx, p.box.y * sy, (p.box.x + p.box.w) * sx, (p.box.y + p.box.h) * sy)
+  }
+
+  private onAreaPicked(p: AreaPick) {
+    const rect = this.pickToRect(p)
+    if (!rect || !this.file) { p.clear(); return }
+    const n = p.pageNumber
+    const m = new Menu()
+    m.addItem(i => i.setTitle('Copy as embed link').setIcon('link').onClick(() => void this.copyRegionLink(n, rect)))
+    m.addItem(i => i.setTitle('Copy as image').setIcon('image').onClick(() => void this.copyRegionImage(n, rect)))
+    m.addItem(i => i.setTitle('Add to book note').setIcon('file-plus').onClick(() => void this.addRegionToNote(n, rect)))
+    m.addItem(i => i.setTitle('Select another area').setIcon('box-select').onClick(() => this.area.start()))
+    m.onHide(() => window.setTimeout(() => p.clear(), 150))
+    m.showAtPosition({ x: p.clientX, y: p.clientY }, this.containerEl.doc)
+  }
+
+  /** `![[Book.pdf#page=N&rect=l,b,r,t|Book, p. xii]]`: PDF++ grammar, physical page in the link, printed page in the alias. */
+  regionEmbed(n: number, rect: PdfRect, sourcePath = this.note?.path ?? ''): string {
+    const link = this.app.fileManager.generateMarkdownLink(this.file!, sourcePath, formatRectSubpath(n, rect), `${this.file!.basename}, ${pageRef(this.labels, n)}`)
+    return link.startsWith('!') ? link : `!${link}`
+  }
+
+  private async copyRegionLink(n: number, rect: PdfRect) {
+    await navigator.clipboard.writeText(this.regionEmbed(n, rect))
+    new Notice('Embed link copied')
+  }
+
+  /** The region at 2× (2 px per PDF point), as printed (no dark-mode colours). */
+  private async regionPng(n: number, rect: PdfRect): Promise<Blob> {
+    const page = await this.doc.getPage(n)
+    const canvas = await renderRegion(page, rect, Math.max(1, rect[2] - rect[0]), { dpr: 2, doc: this.containerEl.doc })
+    const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/png'))
+    canvas.width = canvas.height = 0
+    if (!blob) throw new Error('Could not encode the image')
+    return blob
+  }
+
+  private async copyRegionImage(n: number, rect: PdfRect) {
+    if (!this.file) return
+    let blob: Blob
+    try { blob = await this.regionPng(n, rect) } catch (e) { new Notice(`Could not render the area: ${(e as Error).message}`); return }
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+      new Notice('Image copied')
+      return
+    } catch { /* no image clipboard here (some mobile webviews): save it to the vault instead */ }
+    const name = `${this.file.basename} p${n} ${rect.join('-')}.png`.replace(/[\\/:*?"<>|#^[\]]/g, '')
+    const path = await this.app.fileManager.getAvailablePathForAttachment(name, this.note?.path ?? this.file.path)
+    const img = await this.app.vault.createBinary(path, await blob.arrayBuffer())
+    const embed = this.app.fileManager.generateMarkdownLink(img, this.note?.path ?? '')
+    await navigator.clipboard.writeText(embed.startsWith('!') ? embed : `!${embed}`).catch(() => {})
+    new Notice(`Image saved to ${path}; its embed was copied`)
+  }
+
+  private async addRegionToNote(n: number, rect: PdfRect) {
+    if (!this.file || !this.note) return
+    const ref = pageRef(this.labels, n)
+    const pageLink = this.app.fileManager.generateMarkdownLink(this.file, this.note.path, `#page=${n}`, ref).replace(/^!/, '')
+    const chapter = this.chapterOf(n)?.title
+    const block = [`> [!quote] ${chapter ? `${chapter} · ` : ''}${ref}`, `> ${this.regionEmbed(n, rect)}`, `> ${pageLink}`].join('\n')
+    await this.app.vault.process(this.note, md => `${md.replace(/\s+$/, '')}\n\n${block}\n`)
+    new Notice('Area added to the book note')
+  }
+
+  /** Briefly outline a PDF++ rect (followed `#page=N&rect=…` link). */
+  private flashRect(n: number, rect: readonly number[]) {
+    const pv = this.pageView(n)
+    const wrap = pv?.div?.querySelector('.canvasWrapper') as HTMLElement | null
+    if (!pv?.viewport || !wrap) return
+    const b = pdfRectToViewport(pv.viewport.transform, rect)
+    const k = wrap.offsetWidth / pv.viewport.width
+    const d = el('div', 'octavo-pdf-area is-flash', pv.div)
+    d.setCssStyles({ left: `${wrap.offsetLeft + b.x * k}px`, top: `${wrap.offsetTop + b.y * k}px`, width: `${b.w * k}px`, height: `${b.h * k}px` })
+    window.setTimeout(() => d.remove(), 2500)
+    this.container.scrollTo({ top: pv.div.offsetTop + wrap.offsetTop + b.y * k - this.container.clientHeight / 4, behavior: 'smooth' })
   }
 
   private flashSelection(sel: PdfSelection) {
@@ -1004,11 +1201,11 @@ export class PdfView extends FileView {
     if (!this.doc) return
     const total = this.doc.numPages
     const pct = Math.round(this.fraction() * 100)
-    this.chrome.progressBar.style.setProperty('--octavo-progress', `${this.fraction() * 100}%`)
+    this.chrome.progressBar.setCssProps({ '--octavo-progress': `${this.fraction() * 100}%` })
     const ch = this.chapterOf(this.page)
     const left = ch ? ch.end - this.page : 0
     const s = this.plugin.settings
-    let text = `Page ${this.page} of ${total} · ${pct}%`
+    let text = `${footerPage(this.labels, this.page, total)} · ${pct}%`
     if (s.footer === 'chapter' && ch) text = `${left === 0 ? 'Last page in chapter' : `${left} page${left === 1 ? '' : 's'} left in chapter`} · ${pct}%`
     if (s.footer === 'time') {
       const perPage = this.plugin.pace.estimate(1800)
@@ -1118,9 +1315,11 @@ export class PdfView extends FileView {
     else if ((e.key === '=' || e.key === '+') && mod) { e.preventDefault(); this.zoomBy(1.15) }
     else if (e.key === '-' && mod) { e.preventDefault(); this.zoomBy(1 / 1.15) }
     else if (e.key === '0' && mod) { e.preventDefault(); this.resetZoom() }
+    else if (e.key === 'Escape' && this.area.active) { e.preventDefault(); this.area.cancel() }
     else if (e.key === 'Escape') { if (!this.popover.visible && !this.panel.isOpen) this.focusMode.exit(); this.popover.hide(); this.panel.close() }
     else if ((e.key === 'h' || e.key === 'H') && this.hasSel()) { e.preventDefault(); void this.createHighlight(this.plugin.settings.defaultColor, 'highlight') }
     else if ((e.key === 'n' || e.key === 'N') && this.hasSel()) { e.preventDefault(); void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', true) }
+    else if ((e.key === 't' || e.key === 'T') && !mod && !Platform.isMobile && this.hasSel()) { e.preventDefault(); void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', false, true) }
   }
 
   private async toggleBookmark() {
@@ -1134,7 +1333,14 @@ export class PdfView extends FileView {
     this.chrome.setBookmarked(next.includes(this.page))
   }
 
-  private speakPage() { if (this.doc) this.readAloud().toggle() }
+  private speakPage() {
+    if (!this.doc) return
+    const starting = !this.tts?.active
+    this.readAloud().toggle()
+    const t = this.plugin.settings.tts
+    const systemVoice = t.engine !== 'cloud' || !this.plugin.cloud.signedIn
+    if (starting && systemVoice && this.file) void maybeCloudPrompt(this.plugin, this.root, 'voice', this.file, this.bookId, { systemVoice })
+  }
 
   /** Sentence-by-sentence read-aloud (reading order, highlight, mini player); see readAloud.ts. */
   private readAloud(): PdfReadAloudUi {
@@ -1162,12 +1368,15 @@ export class PdfView extends FileView {
     if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
     m.addItem(i => i.setTitle(this.mode === 'text' ? 'Page view' : 'Text view (reflow)').setIcon(this.mode === 'text' ? 'file' : 'align-left').onClick(() => { this.plugin.settings.pdfMode = this.mode === 'text' ? 'pages' : 'text'; void this.plugin.saveSettings(); this.applyLook() }))
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
+    if (this.mode === 'pages') m.addItem(i => i.setTitle(this.area.active ? 'Cancel area selection' : 'Select area').setIcon('box-select').onClick(() => this.toggleAreaSelect()))
+    m.addItem(i => i.setTitle('Export highlights to note').setIcon('file-output').onClick(() => this.file && void this.plugin.exportHighlights(this.file)))
     m.addItem(i => i.setTitle('Zoom in').setIcon('zoom-in').onClick(() => this.zoomBy(1.2)))
     m.addItem(i => i.setTitle('Zoom out').setIcon('zoom-out').onClick(() => this.zoomBy(1 / 1.2)))
     m.addItem(i => i.setTitle('Fit (reset zoom)').setIcon('maximize-2').onClick(() => this.resetZoom()))
     m.addItem(i => i.setTitle('Go to page…').setIcon('hash').onClick(async () => {
-      const v = await new TextPromptModal(this.app, 'Go to page', String(this.page), `1–${this.doc?.numPages}`).result()
-      if (v && Number(v)) { const from = this.page; this.goToPage(Number(v)); this.offerBack(from) }
+      const v = await new TextPromptModal(this.app, 'Go to page', pageLabel(this.labels, this.page), this.labels ? `A printed page number (e.g. ${pageLabel(this.labels, Math.min(this.doc?.numPages ?? 1, 12))}) or 1–${this.doc?.numPages}` : `1–${this.doc?.numPages}`).result()
+      const n = v ? resolvePageInput(this.labels, v, this.doc?.numPages ?? 0) : null
+      if (n) { const from = this.page; this.goToPage(n); this.offerBack(from) }
     }))
     if (this.pageView(this.page)?.div?.hasClass('is-scanned')) m.addItem(i => i.setTitle('Make searchable (OCR, Octavo Cloud)').setIcon('scan-text').onClick(() => this.file && this.plugin.cloud.requestOcr(this.file)))
     m.addItem(i => i.setTitle('Open in Obsidian’s PDF viewer').setIcon('file').onClick(() => this.leaf.setViewState({ type: 'pdf', state: { file: this.file?.path } })))
@@ -1190,15 +1399,26 @@ export class PdfView extends FileView {
       return
     }
     if (tab === 'highlights') {
-      const list = [...this.highlights.values()].sort((a, b) => (a.anchor.pdf?.page ?? 0) - (b.anchor.pdf?.page ?? 0))
-      if (!list.length) el('div', 'octavo-empty', body, 'Select text to highlight. Highlights are saved to the book note.')
-      for (const h of list) {
-        const card = el('div', `octavo-hl-card octavo-hl-${h.color}`, body)
-        if (h.label) el('div', 'octavo-hl-label', card, h.label)
-        el('div', 'octavo-hl-quote', card, h.anchor.quote.exact)
-        if (h.note) el('div', 'octavo-hl-note', card, h.note)
-        card.onclick = () => { const sel = h.anchor.pdf; if (sel) { this.goToPage(sel.page); this.whenTextLayer(sel.page, () => this.flashSelection(sel)) } }
+      const all = [...this.highlights.values()].sort((a, b) => (a.anchor.pdf?.page ?? 0) - (b.anchor.pdf?.page ?? 0))
+      if (!all.length) el('div', 'octavo-empty', body, 'Select text to highlight. Highlights are saved to the book note.')
+      const bar = el('div', 'octavo-hl-filter', body)
+      const listEl = el('div', 'octavo-hl-list', body)
+      const draw = () => {
+        listEl.empty()
+        const list = filterByTags(all, this.tagFilter)
+        if (all.length && !list.length) el('div', 'octavo-empty', listEl, 'No matches')
+        for (const h of list) {
+          const card = el('div', `octavo-hl-card octavo-hl-${h.color}`, listEl)
+          if (h.label) el('div', 'octavo-hl-label', card, h.label)
+          el('div', 'octavo-hl-quote', card, h.anchor.quote.exact)
+          if (h.note) el('div', 'octavo-hl-note', card, h.note)
+          cardTags(card, h.tags)
+          card.onclick = () => { const sel = h.anchor.pdf; if (sel) { this.goToPage(sel.page); this.whenTextLayer(sel.page, () => this.flashSelection(sel)) } }
+        }
       }
+      tagFilterChips(bar, all, this.tagFilter, draw)
+      if (!bar.childElementCount) bar.remove()
+      draw()
       return
     }
     if (tab === 'search') return this.renderSearch(body)

@@ -6,17 +6,20 @@ import * as CFI from '@octavo/foliate/epubcfi.js'
 import { tag } from '@octavo/foliate/tags.js'
 import {
   normalizeAuthors, bookIdFromBytes, findQuote, makeQuote, newHighlightId, parseSubpath, formatCfiSubpath, formatDuration,
-  type Highlight, type HighlightColor, type ParsedHighlight, tidyTitle } from '@octavo/shared'
+  type Highlight, type HighlightColor, type ParsedHighlight, tidyTitle, pageFromLabel } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import { BOOK_EXTENSIONS, type Backlink } from '../library/BookLibrary'
-import { ReaderChrome, SelectionPopover, SidePanel, el, type PanelTab } from '../reader/ui'
+import { ReaderChrome, SelectionPopover, SidePanel, el, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook } from '../reader/appearance'
 import { bookCss } from '../reader/themes'
 import { sanitizeSection, indexText, rangeFromOffsets, rangeRectInHost, hasSelection, offsetOf } from '../reader/dom'
 import { COLOR_CSS } from '../reader/colors'
 import { Speaker, CloudSpeaker } from '../reader/speech'
 import { FocusMode } from '../reader/focus'
-import { TextPromptModal } from '../reader/modals'
+import { TextPromptModal, TagPromptModal } from '../reader/modals'
+import { filterByTags } from '../reader/tags'
+import { maybeCloudPrompt } from '../reader/cloudPrompt'
+import { showCopyMenu, type CopySource } from '../reader/copy'
 
 export const EPUB_VIEW = 'octavo-epub'
 
@@ -49,6 +52,8 @@ export class EpubView extends FileView {
   private autoScroll = 0
   private searchState: { query: string; results: Array<{ label: string; subitems: Array<{ cfi: string; excerpt: { pre: string; match: string; post: string } }> }> } = { query: '', results: [] }
   private lastSelection: { range: Range; index: number } | null = null
+  /** Tag filter in the highlights panel (lower-case), kept while the book is open. */
+  private tagFilter = new Set<string>()
 
   constructor(leaf: WorkspaceLeaf, private plugin: OctavoPlugin) {
     super(leaf)
@@ -149,6 +154,7 @@ export class EpubView extends FileView {
       if (this.pendingSubpath) { const s = this.pendingSubpath; this.pendingSubpath = null; await this.navigateSubpath(s) }
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
+      void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size })
     } catch (e) {
       console.error('Octavo: failed to open book', e)
       loading.setText(`Could not open this book: ${(e as Error).message ?? e}`)
@@ -186,6 +192,8 @@ export class EpubView extends FileView {
     this.foliate = null
     this.book = null
     this.highlights.clear()
+    this.tagFilter.clear()
+    this.root?.querySelectorAll('.octavo-cloud-banner').forEach(b => b.remove())
     this.chrome?.destroy()
   }
 
@@ -267,8 +275,8 @@ export class EpubView extends FileView {
       if (s.pageEffect === 'curl') r.setAttribute('turn-style', 'curl')
       else r.removeAttribute('turn-style')
     }
-    this.root.style.setProperty('--octavo-bg', look.colors.bg)
-    this.root.style.setProperty('--octavo-fg', look.colors.fg)
+    this.root.setCssProps({ '--octavo-bg': look.colors.bg })
+    this.root.setCssProps({ '--octavo-fg': look.colors.fg })
     this.root.toggleClass('octavo-dark', look.dark)
     this.root.dataset.theme = s.theme
     this.updateFooter()
@@ -348,6 +356,7 @@ export class EpubView extends FileView {
     else if ((k === 'h' || k === 'H') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight') }
     else if ((k === 'n' || k === 'N') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', true) }
     else if ((k === 'u' || k === 'U') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'underline') }
+    else if ((k === 't' || k === 'T') && sel && !Platform.isMobile) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', false, true) }
   }
 
   // ───────────────────────── location, footer, pace ─────────────────────────
@@ -373,7 +382,7 @@ export class EpubView extends FileView {
     if (!loc) return
     const r = this.foliate?.renderer
     const pct = Math.round((loc.fraction ?? 0) * 100)
-    this.chrome.progressBar.style.setProperty('--octavo-progress', `${(loc.fraction ?? 0) * 100}%`)
+    this.chrome.progressBar.setCssProps({ '--octavo-progress': `${(loc.fraction ?? 0) * 100}%` })
     const pages = r?.pages ?? 0, page = r?.page ?? 0
     const left = Math.max(0, pages - page - 1)
     const sectionSize = this.book?.sections?.[loc.index]?.size ?? 0
@@ -474,11 +483,43 @@ export class EpubView extends FileView {
       color: c => void this.createHighlight(sel, c, 'highlight'),
       underline: () => void this.createHighlight(sel, this.plugin.settings.defaultColor, 'underline'),
       note: () => void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', true),
+      tags: () => void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', false, true),
       copyLink: () => void this.copyLinkFor(sel),
+      copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(), () => this.popover.hide()),
       define: () => this.plugin.define(range.toString(), this.contextOf(range)),
       ask: () => this.plugin.ask(range.toString(), this.contextOf(range), this.title, this.loc?.fraction ?? 0),
+      summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { this.speakText(range.toString()) },
     })
+  }
+
+  // ───── for AI features (summarise chapter, flashcards) ─────
+  get bookNote(): TFile | null { return this.note }
+  get bookTitle(): string { return this.title }
+
+  /** A highlight, or the current selection, for "Copy as…" / "Copy citation" (reader/copy.ts). */
+  async copySource(h?: Highlight): Promise<CopySource | null> {
+    if (!this.file) return null
+    const base = { book: this.file, note: this.note, title: this.title }
+    if (h) return { ...base, text: h.anchor.quote.exact, subpath: h.anchor.cfi ? formatCfiSubpath(h.anchor.cfi, h.color) : '', label: h.label, page: pageFromLabel(h.label), color: h.color, comment: h.note }
+    const sel = this.lastSelection
+    if (!sel || !sel.range.toString().trim()) return null
+    return { ...base, text: sel.range.toString(), subpath: formatCfiSubpath(this.foliate.getCFI(sel.index, sel.range)), label: this.labelFor(), page: this.loc?.pageItem?.label }
+  }
+
+  /** The section being read, as plain text, with its table-of-contents label. */
+  async chapterForAi(): Promise<{ title: string; text: string } | null> {
+    const contents: any[] = this.foliate?.renderer?.getContents?.() ?? []
+    const cur = contents.find(c => c.index === this.loc?.index) ?? contents[0]
+    const body: HTMLElement | undefined = cur?.doc?.body
+    if (!body) return null
+    const text = (body.innerText || body.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
+    return { title: this.loc?.tocItem?.label?.trim() || `${this.title}, section ${(cur.index ?? 0) + 1}`, text }
+  }
+
+  /** Highlights in book order of creation: quote plus the reader's note. */
+  highlightsForAi(): Array<{ text: string; note?: string }> {
+    return [...this.highlights.values()].map(h => ({ text: h.anchor.quote.exact, note: h.note })).filter(h => h.text.trim())
   }
 
   private contextOf(range: Range): string {
@@ -494,7 +535,7 @@ export class EpubView extends FileView {
     return makeQuote(idx.text, start, Math.max(start, end))
   }
 
-  private async createHighlight(sel: { range: Range; index: number }, color: HighlightColor, style: 'highlight' | 'underline', withNote = false) {
+  private async createHighlight(sel: { range: Range; index: number }, color: HighlightColor, style: 'highlight' | 'underline', withNote = false, withTags = false) {
     if (!this.file || !this.note) return
     const cfi: string = this.foliate.getCFI(sel.index, sel.range)
     const existing = [...this.highlights.values()].find(h => h.anchor.cfi === cfi)
@@ -505,6 +546,11 @@ export class EpubView extends FileView {
       const note = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Add a note to this highlight').result()
       if (note === null) return
       h.note = note || undefined
+    }
+    if (withTags) {
+      const tags = await new TagPromptModal(this.app, h.tags ?? []).result()
+      if (tags === null) return
+      h.tags = tags.length ? tags : undefined
     }
     sel.range.startContainer.ownerDocument?.getSelection()?.removeAllRanges()
     this.popover.hide()
@@ -537,7 +583,13 @@ export class EpubView extends FileView {
         const note = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Note').result()
         if (note !== null) await this.updateHighlight(h, { note: note || undefined })
       },
+      tags: async () => {
+        this.popover.hide()
+        const tags = await new TagPromptModal(this.app, h.tags ?? []).result()
+        if (tags !== null) await this.updateHighlight(h, { tags: tags.length ? tags : undefined })
+      },
       copyLink: () => void this.copyText(this.plugin.library.linkFor(this.file!, this.note!, h).replace('|↗', `|${shorten(h.anchor.quote.exact)}`)),
+      copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(h), () => this.popover.hide()),
       define: () => this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
       ask: () => this.plugin.ask(h.anchor.quote.exact, h.anchor.quote.exact, this.title, this.loc?.fraction ?? 0),
       speak: () => this.speakText(h.anchor.quote.exact),
@@ -672,6 +724,7 @@ export class EpubView extends FileView {
       : new Speaker(this.foliate, t, () => this.chrome.setSpeaking(false))
     this.chrome.setSpeaking(true)
     this.speaker.start()
+    if (this.file && this.speaker instanceof Speaker) void maybeCloudPrompt(this.plugin, this.root, 'voice', this.file, this.bookId, { systemVoice: true })
   }
 
   private speakText(text: string) {
@@ -701,6 +754,7 @@ export class EpubView extends FileView {
     m.addItem(i => i.setTitle(this.focusMode.active ? 'Exit focus mode' : 'Focus mode (full screen)').setIcon(this.focusMode.active ? 'minimize' : 'maximize').onClick(() => this.focusMode.toggle()))
     if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
+    m.addItem(i => i.setTitle('Export highlights to note').setIcon('file-output').onClick(() => this.file && void this.plugin.exportHighlights(this.file)))
     m.addItem(i => i.setTitle(this.autoScroll ? 'Stop auto-scroll' : 'Auto-scroll').setIcon('arrow-down-wide-narrow').onClick(() => this.toggleAutoScroll()))
     m.addItem(i => i.setTitle('Go to percentage…').setIcon('percent').onClick(async () => {
       const v = await new TextPromptModal(this.app, 'Go to', String(Math.round((this.loc?.fraction ?? 0) * 100)), 'Percentage (0–100)').result()
@@ -762,13 +816,14 @@ export class EpubView extends FileView {
     const notesOnly = el('button', 'octavo-chip', chips, 'Has note')
     let onlyNotes = false
     notesOnly.onclick = () => { onlyNotes = !onlyNotes; notesOnly.toggleClass('is-active', onlyNotes); draw() }
+    tagFilterChips(bar, this.highlights.values(), this.tagFilter, () => draw())
     const list = el('div', 'octavo-hl-list', body)
     const draw = () => {
       list.empty()
       const term = q.value.toLowerCase()
       // keep book order: sort by CFI
-      const items = [...this.highlights.values()].sort((a, b) => (a.anchor.cfi && b.anchor.cfi ? CFI.compare(a.anchor.cfi, b.anchor.cfi) : 0))
-        .filter(h => (!colorFilter || h.color === colorFilter) && (!onlyNotes || h.note) && (!term || h.anchor.quote.exact.toLowerCase().includes(term) || h.note?.toLowerCase().includes(term)))
+      const items = filterByTags([...this.highlights.values()], this.tagFilter).sort((a, b) => (a.anchor.cfi && b.anchor.cfi ? CFI.compare(a.anchor.cfi, b.anchor.cfi) : 0))
+        .filter(h => (!colorFilter || h.color === colorFilter) && (!onlyNotes || h.note) && (!term || h.anchor.quote.exact.toLowerCase().includes(term) || h.note?.toLowerCase().includes(term) || h.tags?.some(t => t.toLowerCase().includes(term.replace(/^#/, '')))))
       if (!items.length) el('div', 'octavo-empty', list, this.highlights.size ? 'No matches' : 'Select text to highlight. Highlights are saved to the book note.')
       for (const h of items) {
         const card = el('div', `octavo-hl-card octavo-hl-${h.color}`, list)
@@ -776,6 +831,7 @@ export class EpubView extends FileView {
         const quote = el('div', 'octavo-hl-quote', card, h.anchor.quote.exact)
         quote.toggleClass('is-collapsed', h.anchor.quote.exact.length > 280)
         if (h.note) el('div', 'octavo-hl-note', card, h.note)
+        cardTags(card, h.tags)
         if (!h.anchor.cfi) el('div', 'octavo-hl-label', card, 'Not located yet — opens when its chapter loads')
         card.onclick = () => { if (h.anchor.cfi) { const from = this.loc?.cfi; void this.foliate.goTo(h.anchor.cfi).then(() => this.flash(h.anchor.cfi!)); if (from) this.offerBack(from) } }
       }
@@ -851,9 +907,9 @@ export class EpubView extends FileView {
       const row = el('div', 'octavo-map-row', map)
       el('div', 'octavo-map-label', row, toc.get(i) ?? '')
       const bar = el('div', 'octavo-map-bar', row)
-      bar.style.setProperty('--w', `${Math.max(2, ((s.size ?? 0) / total) * 100 * 6)}%`)
+      bar.setCssProps({ '--w': `${Math.max(2, ((s.size ?? 0) / total) * 100 * 6)}%` })
       if (i < cur) bar.addClass('is-read')
-      if (i === cur) { bar.addClass('is-current'); bar.style.setProperty('--p', `${(this.loc?.fraction ?? 0) * 100}%`) }
+      if (i === cur) { bar.addClass('is-current'); bar.setCssProps({ '--p': `${(this.loc?.fraction ?? 0) * 100}%` }) }
       const c = counts.get(i)
       if (c) el('span', 'octavo-map-count', row, `${c}`)
       row.onclick = () => { void this.foliate.goTo(i); this.panel.close() }

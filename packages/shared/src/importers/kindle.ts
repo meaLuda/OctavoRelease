@@ -27,8 +27,12 @@ export function importKindle(txt: string): ImportedBook[] {
     const segs = meta.replace(/^-\s*/, '').split('|').map(x => x.trim())
     const kind = segs[0] ?? ''
     const locSeg = segs.length >= 2 ? segs[segs.length - 2]! : kind
-    const loc = /(\d+)(?:\s*-\s*\d+)?\D*$/.exec(locSeg)?.[1] ?? ''
-    const page = segs.length >= 3 ? /(\d+)/.exec(kind)?.[1] : undefined
+    const locM = /(\d+)(?:\s*-\s*(\d+))?\D*$/.exec(locSeg)
+    const loc = locM?.[1] ?? ''
+    // a note sits at the END of its highlight ("Location 412-414" → note at 414), so keep the whole range
+    const locEnd = locM?.[2] ? String(Number(loc.slice(0, Math.max(0, loc.length - locM[2].length)) + locM[2])) : loc
+    // "on page 12 | Location 180-182 | Added on …"; PDFs/personal documents have no location: "on page 23 | Added on …"
+    const page = segs.length >= 3 || /page|seite|p[áa]gina|ページ|页/i.test(kind) ? /(\d+)/.exec(kind)?.[1] : undefined
     const isNote = /note|notiz|nota|remarque|注/i.test(kind)
     if (/bookmark|lesezeichen|marcador|signet|ブックマーク/i.test(kind)) continue
     if (isNote) { pendingNotes.push({ key, loc, text }); continue }
@@ -40,14 +44,15 @@ export function importKindle(txt: string): ImportedBook[] {
       created: toIso(date), anchor: { quote: { exact: text, prefix: '', suffix: '' } },
       // stash location for note matching
       tags: undefined,
-      ...( { _loc: loc } as object),
+      ...( { _loc: loc, _locEnd: locEnd } as object),
     } as any)
   }
   for (const n of pendingNotes) {
     const hs = books.get(n.key)?.highlights as Array<any> | undefined
-    const target = hs?.slice().reverse().find(h => h._loc === n.loc)
+    const at = Number(n.loc)
+    const target = hs?.slice().reverse().find(h => h._loc === n.loc || (Number(h._loc) <= at && at <= Number(h._locEnd)))
     if (target) target.note = target.note ? `${target.note}\n${n.text}` : n.text
   }
-  for (const b of books.values()) for (const h of b.highlights as any[]) delete h._loc
+  for (const b of books.values()) for (const h of b.highlights as any[]) { delete h._loc; delete h._locEnd }
   return [...books.values()]
 }

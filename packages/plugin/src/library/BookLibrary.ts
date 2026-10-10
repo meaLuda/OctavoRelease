@@ -182,9 +182,14 @@ export class BookLibrary {
   }
 
   linkFor(book: TFile, note: TFile, h: Highlight): string {
+    return this.linkFrom(book, note.path, h)
+  }
+
+  /** Deep link to a highlight, written from any note (e.g. an exported literature note). */
+  linkFrom(book: TFile, sourcePath: string, h: Highlight): string {
     const sub = h.anchor.cfi ? formatCfiSubpath(h.anchor.cfi, h.color)
       : h.anchor.pdf ? formatPdfSubpath(h.anchor.pdf, h.color) : ''
-    return this.app.fileManager.generateMarkdownLink(book, note.path, sub, '↗').replace(/^!/, '')
+    return this.app.fileManager.generateMarkdownLink(book, sourcePath, sub, '↗').replace(/^!/, '')
   }
 
   async saveHighlight(book: TFile, note: TFile, h: Highlight): Promise<void> {
@@ -216,6 +221,8 @@ export class BookLibrary {
     for (const source in resolved) {
       if (!resolved[source]?.[book.path]) continue
       const cache = mc.getCache(source)
+      // exported literature notes repeat the book's own highlights: not backlinks
+      if (cache?.frontmatter?.['octavo-export']) continue
       for (const l of [...(cache?.links ?? []), ...(cache?.embeds ?? [])]) {
         const hash = l.link.indexOf('#')
         if (hash < 0) continue

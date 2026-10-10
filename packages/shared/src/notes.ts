@@ -67,7 +67,7 @@ export function parseHighlights(markdown: string): ParsedHighlight[] {
     try { meta = JSON.parse(META_RE.exec(body[metaIdx]!)![1]!) } catch { i = j - 1; continue }
     // content = everything before the link line (the line just before meta)
     const content = body.slice(0, Math.max(0, metaIdx - 1))
-    const tagLine = content.length && /^(#[\w/-]+\s*)+$/.test(content[content.length - 1]!) ? content.pop() : undefined
+    const tagLine = content.length && /^(#[\p{L}\p{N}_/-]+\s*)+$/u.test(content[content.length - 1]!) ? content.pop() : undefined
     const blank = content.indexOf('')
     const exact = (blank < 0 ? content : content.slice(0, blank)).join('\n')
     const note = blank < 0 ? undefined : content.slice(blank + 1).join('\n').trim() || undefined
