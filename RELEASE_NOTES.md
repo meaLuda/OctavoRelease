@@ -1,4 +1,7 @@
-Octavo Reader 1.1.0 beta 6
+Octavo Reader 1.1.0 beta 7
+
+New in beta 7
+- Night light keeps your theme: Paper, Calm, Focus and the rest stay distinct in the evening, just warmer. The Appearance panel says when it is warming the page.
 
 New in beta 6
 - PDF: no page sizing errors while a pane is minimised or collapsed.
