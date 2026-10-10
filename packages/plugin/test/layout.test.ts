@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inkBox, cropBox, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, resolveLayout, pruneLayouts, useSpread, joinCopiedLines, turnFor } from '../src/pdf/layout'
+import { upgradeLayouts, inkBox, cropBox, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, resolveLayout, pruneLayouts, useSpread, joinCopiedLines, turnFor } from '../src/pdf/layout'
 
 /** w×h RGBA page of `bg` with ink rectangles [x0,y0,x1,y1) in `fg`. */
 function page(w: number, h: number, rects: number[][], bg = [255, 255, 255], fg = [20, 20, 20]) {
@@ -99,8 +99,8 @@ describe('zoom', () => {
 })
 
 describe('per-book layout', () => {
-  it('defaults: auto fit, vertical, zoom 1; crop from device default', () => {
-    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'auto', crop: true, scroll: 'vertical', dir: 'ltr', zoom: 1, spread: 'one' })
+  it('defaults: auto fit, book-style paging, zoom 1; crop from device default', () => {
+    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'auto', crop: true, scroll: 'paged', dir: 'ltr', zoom: 1, spread: 'one' })
   })
   it('saved values win and are sanitised', () => {
     expect(resolveLayout({ fit: 'page', crop: false, scroll: 'paged', zoom: 1.7 }, { crop: true })).toEqual({ fit: 'page', crop: false, scroll: 'paged', dir: 'ltr', zoom: 1.7, spread: 'one' })
@@ -157,5 +157,14 @@ describe('paged direction', () => {
   it('direction is remembered per book, LTR by default', () => {
     expect(resolveLayout(undefined, { crop: false }).dir).toBe('ltr')
     expect(resolveLayout({ dir: 'rtl' }, { crop: false }).dir).toBe('rtl')
+  })
+})
+
+describe('layout upgrade to book-style paging', () => {
+  it('drops the old default scroll and zoom, keeps explicit choices', () => {
+    const out = upgradeLayouts({ a: { fit: 'auto', scroll: 'vertical', zoom: 1.575, spread: 'one', crop: false }, b: { fit: 'width', scroll: 'paged', dir: 'rtl', zoom: 2, spread: 'two' } })
+    expect(out.a).toEqual({ fit: 'auto', spread: 'one', crop: false })
+    expect(out.b).toEqual({ fit: 'width', scroll: 'paged', dir: 'rtl', spread: 'two' })
+    expect(resolveLayout(out.a, { crop: false }).scroll).toBe('paged')
   })
 })
