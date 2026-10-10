@@ -124,7 +124,7 @@ export class PdfView extends FileView {
     this.container.addEventListener('click', e => this.onClick(e))
     // ctrl/cmd+wheel; a trackpad pinch arrives as ctrl+wheel with small deltas
     this.container.addEventListener('wheel', e => {
-      if (!(e.ctrlKey || e.metaKey)) return
+      if (!(e.ctrlKey || e.metaKey)) { this.wheelTurn(e); return }
       e.preventDefault()
       this.zoomAt(Math.exp(-Math.max(-25, Math.min(25, e.deltaY)) / 125), e.clientX, e.clientY)
     }, { passive: false })
@@ -145,7 +145,7 @@ export class PdfView extends FileView {
     this.registerEvent(this.app.vault.on('modify', f => { if (f === this.note) void this.loadHighlights() }))
     this.registerEvent(this.app.workspace.on('active-leaf-change', l => { if (l !== this.leaf) this.containerEl.doc.body.removeClass('octavo-immersive') }))
     let t = 0
-    const ro = new ResizeObserver(() => { window.clearTimeout(t); t = window.setTimeout(() => this.fit(), 120) })
+    const ro = new ResizeObserver(() => { window.clearTimeout(t); t = window.setTimeout(() => this.fit({ resize: true }), 120) })
     ro.observe(this.root)
     this.register(() => ro.disconnect())
   }
@@ -262,40 +262,71 @@ export class PdfView extends FileView {
    * Apply the book's layout: scroll mode, spread, and a scale of fit × zoom. Desktop without crop or zoom keeps
    * pdf.js's own 'page-width' / 'page-fit' (unchanged behaviour); phones and crops use a computed scale.
    */
-  private fit() {
+  private fit(opts: { resize?: boolean } = {}) {
     const v = this.viewer
     if (!v?.pagesCount) return
     const L = this.layout, phone = Platform.isPhone
     const pv1 = this.pageView(this.page) ?? this.pageView(1)
-    const aspect = pv1?.viewport ? pv1.viewport.width / pv1.viewport.height : 0
-    const spread = useSpread(L, this.root.clientWidth, phone, this.container.clientHeight - 88, aspect) ? 1 : 0 // SpreadMode.ODD | NONE
+    // Two pages only when the reader chose it for this book. Book pairing like Acrobat's cover page: page 1
+    // alone, then 2|3, 4|5 (pdf.js SpreadMode.EVEN), so facing pages face each other. Scrolling stays the
+    // reader's choice (vertical by default), as in every other reader.
+    const spread = useSpread(L, phone) ? 2 : 0 // SpreadMode.EVEN | NONE
     const scroll = L.scroll === 'paged' ? 3 : 0 // ScrollMode.PAGE | VERTICAL
     if (v.scrollMode !== scroll) v.scrollMode = scroll
     if (v.spreadMode !== spread) v.spreadMode = spread
     this.root.toggleClass('is-paged', scroll === 3)
+    this.root.toggleClass('is-spread', spread !== 0)
     const fit = effectiveFit(L.fit)
+    // margin trim is opt-in (Crop margins), as in Skim, PDF Expert and Zotero; spreads trim by clipping each page
+    const trim = L.crop && spread ? this.spreadTrim() : null
+    this.root.toggleClass('is-spread-trim', !!trim)
     const crop = L.crop && !spread ? this.crop : null
     this.wantScale = 0
-    if (!crop && L.zoom === 1 && !phone) {
-      if (spread && pv1?.viewport && pv1.scale) {
-        // a spread is only chosen when the whole pair fits: size it to the height left between the bars
-        // (pdf.js 'page-fit' ignores the reader's top and bottom padding and clips the page edge)
-        const unitH = pv1.viewport.height / pv1.scale
-        v.currentScale = Math.max(0.1, (this.container.clientHeight - 88 - 24) / unitH)
-      } else {
-        v.currentScaleValue = fit === 'page' ? 'page-fit' : 'page-width'
-      }
-      this.fitBase = v.currentScale
+    const before = v.currentScale
+    let base: number
+    if (spread && pv1?.viewport && pv1.scale) {
+      base = this.spreadFit(pv1, trim)
+    } else if (!crop && !phone) {
+      // Auto is pdf.js's (Firefox's) automatic zoom: page width, capped at 125% so one page on a big screen stays
+      // a comfortable size; Width and Page are pdf.js's presets
+      const keep = v.currentScale
+      v.currentScaleValue = fit === 'page' ? 'page-fit' : L.fit === 'auto' ? 'auto' : 'page-width'
+      base = v.currentScale
+      if (L.zoom !== 1) v.currentScale = keep // restored below
     } else {
-      const pv = this.pageView(this.page) ?? this.pageView(1)
+      const pv = pv1
       if (!pv?.viewport || !pv.scale) return
       const unitW = pv.viewport.width / pv.scale, unitH = pv.viewport.height / pv.scale
       const viewH = this.container.clientHeight - (phone ? 52 : 88) // minus the bars' padding
-      this.fitBase = fitScale(fit, unitW, unitH, this.container.clientWidth, viewH, this.gutter(), crop)
-      v.currentScale = this.fitBase * L.zoom
+      base = fitScale(fit, unitW, unitH, this.container.clientWidth, viewH, this.gutter(), crop)
+    }
+    this.fitBase = base
+    if (L.zoom === 1) v.currentScale = base
+    else if (opts.resize && before) {
+      // a zoom the reader set keeps its absolute size when the window changes (pdf.js refits presets only)
+      v.currentScale = before
+      this.layout.zoom = clampZoom(before / base)
+    } else v.currentScale = base * L.zoom
+    if (trim) {
+      const unitH = pv1!.viewport.height / pv1!.scale, unitW = pv1!.viewport.width / pv1!.scale
+      const H = unitH * v.currentScale, W = unitW * v.currentScale
+      this.root.setCssProps({ '--oc-t': `${trim.y0 * H}px`, '--oc-r': `${(1 - trim.x1) * W}px`, '--oc-b': `${(1 - trim.y1) * H}px`, '--oc-l': `${trim.x0 * W}px` })
     }
     this.updateFitClass()
     this.alignCrop()
+  }
+
+  /**
+   * Scale for two pages side by side: the pair fits the width, a whole page fits the height (so you never
+   * read down the left page and back up for the right), and like pdf.js "auto" it never exceeds 125%
+   * (more when margins are trimmed, since the trimmed box is what you read).
+   */
+  private spreadFit(pv: any, trim: Box | null): number {
+    const unitH = pv.viewport.height / pv.scale, unitW = pv.viewport.width / pv.scale
+    const fw = trim ? trim.x1 - trim.x0 : 1, fh = trim ? trim.y1 - trim.y0 : 1
+    const availW = this.container.clientWidth - 48, availH = this.container.clientHeight - 88 - 16
+    const cap = 1.25 / Math.max(0.6, Math.min(fw, fh))
+    return Math.max(0.1, Math.min(cap, availW / (2 * unitW * fw + 16 / 1), availH / (unitH * fh)))
   }
 
   /** At fit zoom with a crop, keep the crop box's left edge at the gutter (pdf.js resets scrollLeft on navigation). */
@@ -334,9 +365,25 @@ export class PdfView extends FileView {
     return b
   }
 
+  /** Margin trim for a spread: the book's crop box, measured once in the background the first time. */
+  private spreadTrimAsked = false
+  private spreadTrim(): Box | null {
+    if (this.crop) return this.crop
+    if (!this.spreadTrimAsked && this.doc) {
+      this.spreadTrimAsked = true
+      const viewer = this.viewer
+      void this.findCrop(this.page).then(b => { if (b && this.viewer === viewer && !this.crop) { this.crop = b; this.fit(); this.saveLayout() } })
+    }
+    return null
+  }
+
+  /** One crop box for the book: pages near `start` plus a sample across the whole book, so a heading or page
+   *  number that sits higher or lower on some pages is never cut off. */
   private async findCrop(start: number): Promise<Box | null> {
-    const pages = [start, start + 1, start + 2].filter(p => p <= this.doc.numPages)
-    return cropBox(await Promise.all(pages.map(p => this.pageBox(p).catch(() => null))))
+    const n = this.doc.numPages
+    const pick = [start, start + 1, start + 2, ...[0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92].map(f => Math.round(n * f))]
+    const pages = [...new Set(pick.filter(p => p >= 2 && p <= n))]
+    return cropBox(await Promise.all(pages.map(p => this.pageBox(p).catch(() => null))), 0.025)
   }
 
   /** A rendered page with ink outside the crop widens it, so same-size pages are never cut. */
@@ -354,7 +401,7 @@ export class PdfView extends FileView {
   private saveLayout() {
     if (!this.bookId) return
     const s = this.plugin.settings, L = this.layout
-    s.pdfLayouts = pruneLayouts({ ...s.pdfLayouts, [this.layoutKey()]: { fit: L.fit, crop: L.crop, scroll: L.scroll, dir: L.dir, zoom: Math.round(L.zoom * 1000) / 1000, box: this.crop, t: Date.now() } })
+    s.pdfLayouts = pruneLayouts({ ...s.pdfLayouts, [this.layoutKey()]: { fit: L.fit, crop: L.crop, scroll: L.scroll, dir: L.dir, zoom: Math.round(L.zoom * 1000) / 1000, spread: L.spread, box: this.crop, t: Date.now() } })
     window.clearTimeout(this.layoutTimer)
     this.layoutTimer = window.setTimeout(() => void this.plugin.saveSettings(), 600)
   }
@@ -405,12 +452,40 @@ export class PdfView extends FileView {
     const zoom = clampZoom(want / this.fitBase)
     const wasFit = this.layout.zoom === 1
     this.layout.zoom = Math.abs(zoom - 1) < 0.02 ? 1 : zoom
-    if (wasFit !== (this.layout.zoom === 1) && useSpread({ ...this.layout, zoom: 1 }, this.root.clientWidth, Platform.isPhone)) this.fit()
+    
     this.updateFitClass()
     this.saveLayout()
   }
 
   private zoomBy(f: number) { this.zoomAt(f) }
+
+  /**
+   * One page (or pair) at a time: the wheel or trackpad turns the page once the current one is scrolled to its
+   * edge. Deltas are summed so a trackpad flick turns one page, then a short pause before the next turn.
+   */
+  private wheelAcc = 0
+  private wheelLast = 0
+  private wheelArmed = false
+  private wheelTurn(e: WheelEvent) {
+    // only in Paged scroll, which the reader chose; continuous scroll never turns pages on its own
+    if (this.mode !== 'pages' || this.layout.scroll !== 'paged' || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return
+    const c = this.container, down = e.deltaY > 0
+    // a page that (nearly) fits counts as at both edges: pdf.js parks it a margin below the top
+    const fits = c.scrollHeight - c.clientHeight < 120
+    const atEdge = fits || (down ? c.scrollTop + c.clientHeight >= c.scrollHeight - 2 : c.scrollTop <= 2)
+    const now = Date.now(), fresh = now - this.wheelLast > 250
+    this.wheelLast = now
+    // one gesture turns at most one page: trackpad momentum keeps sending events after the flick
+    if (fresh) { this.wheelAcc = 0; this.wheelArmed = true }
+    if (!atEdge) { this.wheelAcc = 0; return } // a zoomed page scrolls first
+    e.preventDefault()
+    if (!this.wheelArmed) return
+    this.wheelAcc += e.deltaY
+    if (Math.abs(this.wheelAcc) < 60) return
+    this.wheelAcc = 0
+    this.wheelArmed = false
+    this.turn(down ? 1 : -1)
+  }
 
   /** Arrow keys / edge arrows: the right side is "next" unless the book reads right to left (paged mode). */
   private turnSide(side: 'left' | 'right') {

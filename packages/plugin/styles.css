@@ -562,3 +562,14 @@ body.is-phone:not(.octavo-immersive) .octavo-tts-bar { bottom: calc(var(--navbar
 .octavo-template-setting .setting-item-control { flex: 1 1 100%; justify-content: flex-start; }
 .octavo-template-input { width: 100%; min-height: 4.5em; font-family: var(--font-monospace); font-size: var(--font-smaller); }
 .octavo-citekey-hint { margin: 0.5em 0 1em; }
+
+/* Two pages side by side (opt-in). With Crop margins on, each page is clipped to its text; the pair keeps a
+   visible edge through drop-shadow on the spread (clip-path would clip a box-shadow) */
+.octavo-pdf.is-spread-trim .pdfViewer .spread .page {
+  clip-path: inset(var(--oc-t) var(--oc-r) var(--oc-b) var(--oc-l));
+  margin: calc(12px - var(--oc-t)) calc(8px - var(--oc-r)) calc(12px - var(--oc-b)) calc(8px - var(--oc-l));
+  box-shadow: none;
+}
+.octavo-pdf.is-spread-trim .pdfViewer .spread { filter: drop-shadow(0 0 1px var(--background-modifier-border-hover)) drop-shadow(0 1px 3px rgba(0, 0, 0, .18)); }
+/* page edges stay visible on dark themes */
+.octavo-pdf.octavo-dark .pdfViewer .page { box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), var(--shadow-s); }

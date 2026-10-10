@@ -90,6 +90,8 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
       const L = pl.get()
       // per book: the page is the preview, and the choice is remembered for this book
       seg(row(layout, 'Fit'), [['auto', 'Auto'], ['width', 'Width'], ['page', 'Page']] as Array<[ResolvedLayout['fit'], string]>, L.fit, v => pl.set({ fit: v, zoom: 1 }))
+      // two pages side by side is opt-in (whole pairs, margins trimmed, one pair per scroll); one page by default
+      seg(row(layout, 'Pages'), [['one', 'One'], ['two', 'Two']] as Array<[ResolvedLayout['spread'], string]>, L.spread, v => { pl.set({ spread: v, zoom: 1 }); rerender() })
       const crop = row(layout, 'Crop margins')
       const cropToggle = el('div', `checkbox-container${L.crop ? ' is-enabled' : ''}`, crop)
       cropToggle.setAttribute('aria-label', 'Crop page margins')
