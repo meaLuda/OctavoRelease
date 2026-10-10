@@ -266,7 +266,9 @@ export class PdfView extends FileView {
     const v = this.viewer
     if (!v?.pagesCount) return
     const L = this.layout, phone = Platform.isPhone
-    const spread = useSpread(L, this.root.clientWidth, phone) ? 1 : 0 // SpreadMode.ODD | NONE
+    const pv1 = this.pageView(this.page) ?? this.pageView(1)
+    const aspect = pv1?.viewport ? pv1.viewport.width / pv1.viewport.height : 0
+    const spread = useSpread(L, this.root.clientWidth, phone, this.container.clientHeight - 88, aspect) ? 1 : 0 // SpreadMode.ODD | NONE
     const scroll = L.scroll === 'paged' ? 3 : 0 // ScrollMode.PAGE | VERTICAL
     if (v.scrollMode !== scroll) v.scrollMode = scroll
     if (v.spreadMode !== spread) v.spreadMode = spread
@@ -275,7 +277,14 @@ export class PdfView extends FileView {
     const crop = L.crop && !spread ? this.crop : null
     this.wantScale = 0
     if (!crop && L.zoom === 1 && !phone) {
-      v.currentScaleValue = fit === 'page' ? 'page-fit' : 'page-width'
+      if (spread && pv1?.viewport && pv1.scale) {
+        // a spread is only chosen when the whole pair fits: size it to the height left between the bars
+        // (pdf.js 'page-fit' ignores the reader's top and bottom padding and clips the page edge)
+        const unitH = pv1.viewport.height / pv1.scale
+        v.currentScale = Math.max(0.1, (this.container.clientHeight - 88 - 24) / unitH)
+      } else {
+        v.currentScaleValue = fit === 'page' ? 'page-fit' : 'page-width'
+      }
       this.fitBase = v.currentScale
     } else {
       const pv = this.pageView(this.page) ?? this.pageView(1)

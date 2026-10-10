@@ -64,6 +64,12 @@ describe('fit and crop scale math', () => {
     expect(useSpread(L, 1600, true)).toBe(false)
     expect(useSpread({ ...L, zoom: 2 }, 1600, false)).toBe(false)
     expect(useSpread({ ...L, scroll: 'paged' }, 1600, false)).toBe(false)
+    // the whole pair must fit on screen: a 2000x1130 window with book pages (0.66) fits two 746px pages
+    expect(useSpread(L, 2000, false, 1130, 0.66)).toBe(true)
+    // a wide but short window would make each page taller than the screen at width-fit: no spread
+    expect(useSpread(L, 1600, false, 700, 0.66)).toBe(false)   // pages would be only 462px wide
+    // landscape pages (slides) never pair up unless both fit
+    expect(useSpread(L, 1600, false, 1000, 1.33)).toBe(false)
   })
 })
 

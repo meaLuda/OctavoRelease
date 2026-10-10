@@ -46,8 +46,18 @@ export const clampZoom = (z: number) => Math.min(6, Math.max(0.5, z))
 /** Auto fills the width (a two-page spread on a wide desktop view is decided by `useSpread`). */
 export const effectiveFit = (fit: PdfFit): 'width' | 'page' => fit === 'page' ? 'page' : 'width'
 
-/** Two-page spread: Auto fit, continuous scroll, not zoomed, and each page gets ≥ ~750px. Never on phones. */
-export const useSpread = (l: ResolvedLayout, viewW: number, phone: boolean) => l.fit === 'auto' && l.scroll === 'vertical' && l.zoom === 1 && viewW >= 1550 && !phone
+/**
+ * Two-page spread: Auto fit, continuous scroll, not zoomed, never on phones, and only when the WHOLE pair fits
+ * on screen with each page still ≥ 600px wide. A spread sized to the width makes each page taller than the
+ * screen, so you read down the left page, scroll back up for the right one, then down again.
+ * `viewH`/`aspect` (page width ÷ height) come from the open book; without them only the width test applies.
+ */
+export const useSpread = (l: ResolvedLayout, viewW: number, phone: boolean, viewH = Infinity, aspect = 0) => {
+  if (l.fit !== 'auto' || l.scroll !== 'vertical' || l.zoom !== 1 || phone || viewW < 1550) return false
+  if (!aspect || !Number.isFinite(viewH)) return true
+  const pageW = viewH * aspect // each page at full height
+  return pageW >= 600 && 2 * pageW + 40 <= viewW
+}
 
 /**
  * Ink bounding box of a low-res render. Paper colour comes from the corners (works for tinted pages);
