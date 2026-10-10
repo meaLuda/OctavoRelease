@@ -1,4 +1,7 @@
-Octavo Reader 1.1.0 beta 7
+Octavo Reader 1.1.0 beta 8
+
+New in beta 8
+- PDFs follow your Appearance and theme like books do: Light, Dark or Auto, and themes such as Paper, Calm or True Black tint the page and ink (photos stay photos). Original keeps the PDF as printed. The PDF Dark mode row chooses how pages darken.
 
 New in beta 7
 - Night light keeps your theme: Paper, Calm, Focus and the rest stay distinct in the evening, just warmer. The Appearance panel says when it is warming the page.
