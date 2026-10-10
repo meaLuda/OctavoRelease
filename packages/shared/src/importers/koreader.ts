@@ -31,13 +31,14 @@ export function importKoreaderSidecar(lua: string, bookPath?: string): ImportedB
     const bm: any[] = Array.isArray(t.bookmarks) ? t.bookmarks : Object.values(t.bookmarks)
     anns = bm.filter(b => b.highlighted || b.text).map(b => ({ text: b.notes ?? b.text, note: b.text !== b.notes ? undefined : undefined, chapter: b.chapter, datetime: b.datetime, pageno: typeof b.page === 'number' ? b.page : undefined }))
   }
-  return fromAnnotations(anns, { ...props, file: bookPath }, typeof t.percent_finished === 'number' ? t.percent_finished : undefined, t.summary?.status === 'complete')
+  return fromAnnotations(anns, { ...props, file: bookPath ?? (typeof t.doc_path === 'string' ? t.doc_path : undefined) }, typeof t.percent_finished === 'number' ? t.percent_finished : undefined, t.summary?.status === 'complete')
 }
 
 /** KOReader "Export highlights → JSON" (exporter.koplugin): a book object or array of them with `entries`. */
 export function importKoreaderJson(json: string): ImportedBook[] {
   const data = JSON.parse(json)
-  const books: any[] = Array.isArray(data) ? data : data.entries ? [data] : Object.values(data)
+  // one book → the book object; several → { created_on, version, documents: [book…] }
+  const books: any[] = Array.isArray(data) ? data : data.entries ? [data] : Array.isArray(data.documents) ? data.documents : Object.values(data)
   return books.map(b => fromAnnotations(
     (b.entries ?? []).map((e: any) => ({ text: e.text, note: e.note, chapter: e.chapter, color: e.color, drawer: e.drawer, time: e.time, pageno: e.page })),
     { title: b.title, authors: b.author, file: b.file }))

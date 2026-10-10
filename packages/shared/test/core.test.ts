@@ -62,6 +62,11 @@ describe('book note blocks', () => {
     const [p] = parseHighlights(md)
     expect(p).toMatchObject({ id: h.id, color: 'yellow', note: h.note, tags: h.tags, label: h.label, anchor: h.anchor })
   })
+  it('round-trips non-ASCII tags without leaking the tag line into the note', () => {
+    const h = hl({ note: 'Pensée', tags: ['café', 'überblick/ch-2'] })
+    const [p] = parseHighlights(upsertHighlight('', h, 'L'))
+    expect(p).toMatchObject({ note: 'Pensée', tags: ['café', 'überblick/ch-2'] })
+  })
   it('appends new highlights inside the Highlights section, before the next heading', () => {
     let md = '# Book\n\n## Highlights\n\n## My notes\nkeep me\n'
     md = upsertHighlight(md, hl({ id: 'one' }), 'L1')

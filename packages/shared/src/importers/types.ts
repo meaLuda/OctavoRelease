@@ -5,13 +5,15 @@ export interface ImportedBook {
   bookPath?: string
   title?: string
   author?: string
+  /** Zotero / Better BibTeX citekey, kept on the book note */
+  citekey?: string
   highlights: Highlight[]
   position?: { cfi?: string; fraction?: number }
   status?: 'want' | 'reading' | 'finished'
   lastRead?: string
 }
 
-export type ImportSource = 'annotator' | 'elton' | 'weave' | 'kindle' | 'koreader' | 'readest' | 'epub-plugin'
+export type ImportSource = 'annotator' | 'elton' | 'weave' | 'kindle' | 'koreader' | 'readest' | 'zotero' | 'epub-plugin'
 
 let n = 0
 export const importId = (prefix: string) => `${prefix}${(Date.now() % 1e8).toString(36)}${(n++).toString(36)}`
@@ -38,6 +40,23 @@ export function mapColor(c: unknown): HighlightColor {
 
 export const toIso = (t: unknown): string => {
   if (typeof t === 'number') return new Date(t < 1e12 ? t * 1000 : t).toISOString()
-  if (typeof t === 'string') { const d = new Date(t.replace(' ', 'T')); if (!isNaN(+d)) return d.toISOString() }
+  // "2025-02-03 10:11:12" (KOReader) needs a T; free-form dates ("8 January 2024 21:14:03", Kindle) must be parsed as-is
+  if (typeof t === 'string') { const d = new Date(/^\d{4}-\d\d-\d\d \d/.test(t) ? t.replace(' ', 'T') : t); if (!isNaN(+d)) return d.toISOString() }
   return new Date(0).toISOString()
+}
+
+/** What is at a vault path: nothing, a book note (Octavo's, or a note it created for an imported book), or any other note. */
+export type NoteKind = 'missing' | 'book' | 'other'
+
+/**
+ * The note that receives imported highlights for a book that isn't in the vault: `<folder>/<title>.md`, else
+ * `<folder>/<title> (<source>).md`. An existing note is reused only when it is a book note, so highlights never
+ * land in another plugin's note (e.g. the Zotero literature note they were imported from). Null: skip the book.
+ */
+export function importNotePath(folder: string, title: string, source: string, kindAt: (path: string) => NoteKind): string | null {
+  const safe = title.replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Imported book'
+  const dir = folder.replace(/^\/+|\/+$/g, '')
+  const at = (name: string) => `${dir ? `${dir}/` : ''}${name}.md`
+  for (const p of [at(safe), at(`${safe} (${source})`)]) if (kindAt(p) !== 'other') return p
+  return null
 }

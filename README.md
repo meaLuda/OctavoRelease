@@ -18,6 +18,16 @@ Website: https://octavo.devformat.tools
 
 In Obsidian, go to **Settings → Community plugins → Browse**, search for **Octavo**, then select **Install** and **Enable**.
 
+
+## Moving from PDF++ or Annotator
+
+- **PDF++ links keep working.** `[[book.pdf#page=12&selection=…&color=…]]` and region embeds (`#page=…&rect=…`) open in Octavo at the same place, and highlights are drawn back onto the page.
+- **Annotator highlights** come across with *Import highlights → Annotator* (colours and comments included).
+- **Make Octavo your PDF viewer:** Settings → Octavo Reader → Library → "Open PDFs in Octavo". Your PDF files are never modified.
+- **What differs:** Octavo stores highlights in the book's Markdown note (one callout per highlight) instead of inside the PDF, and adds a library, read aloud, phone layouts and EPUB in the same reader.
+
+Full guide: https://octavo.devformat.tools/moving-from-pdfplusplus.html
+
 ## On mobile (iPhone, iPad, Android)
 
 Obsidian keeps plugin icons in the **ribbon menu**: tap the **Menu** button at the bottom right. To show Octavo

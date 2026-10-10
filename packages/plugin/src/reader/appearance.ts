@@ -47,8 +47,8 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
     const dark = id === 'black' || (s.appearance === 'auto' ? obsidianDark : s.appearance === 'dark')
     const c = dark ? t.dark : t.light
     const b = el('button', 'octavo-theme-swatch', themes)
-    b.style.setProperty('--sw-bg', c.bg)
-    b.style.setProperty('--sw-fg', c.fg)
+    b.setCssProps({ '--sw-bg': c.bg })
+    b.setCssProps({ '--sw-fg': c.fg })
     el('span', 'octavo-theme-aa', b, 'Aa')
     el('span', 'octavo-theme-name', b, t.name)
     if (s.theme === id) b.addClass('is-active')

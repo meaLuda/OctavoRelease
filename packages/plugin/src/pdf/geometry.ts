@@ -58,3 +58,26 @@ export function imageCoverage(fnArray: number[], argsArray: any[], OPS: Record<s
   }
   return best
 }
+
+/** Bounding boxes, in PDF user space [x0, y0, x1, y1], of every raster image painted on the page. */
+export function imageRects(fnArray: number[], argsArray: any[], OPS: Record<string, number>): [number, number, number, number][] {
+  let ctm: M6 = [1, 0, 0, 1, 0, 0]
+  const stack: M6[] = []
+  const imageOps = new Set([OPS.paintImageXObject, OPS.paintInlineImageXObject, OPS.paintImageXObjectRepeat, OPS.paintJpegXObject].filter(x => x !== undefined))
+  const out: [number, number, number, number][] = []
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i], args = argsArray[i]
+    if (fn === OPS.save) stack.push(ctm)
+    else if (fn === OPS.restore) ctm = stack.pop() ?? [1, 0, 0, 1, 0, 0]
+    else if (fn === OPS.transform) ctm = mul(ctm, args as M6)
+    else if (fn === OPS.paintFormXObjectBegin && args?.[0]) { stack.push(ctm); ctm = mul(ctm, args[0] as M6) }
+    else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm
+    else if (imageOps.has(fn!)) {
+      // an image fills the unit square under the current transform
+      const xs = [0, 1, 0, 1].map((u, k) => ctm[0] * u + ctm[2] * [0, 0, 1, 1][k]! + ctm[4])
+      const ys = [0, 1, 0, 1].map((u, k) => ctm[1] * u + ctm[3] * [0, 0, 1, 1][k]! + ctm[5])
+      out.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)])
+    }
+  }
+  return out
+}

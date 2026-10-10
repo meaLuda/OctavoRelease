@@ -18,3 +18,21 @@ export function importReadest(configJson: string, meta?: { bookPath?: string; ti
     position: c.location || progress !== undefined ? { cfi: typeof c.location === 'string' ? c.location : undefined, fraction: progress } : undefined,
   }
 }
+
+/**
+ * Readest's config.json only carries `bookHash`; titles live in Books/library.json
+ * ([{ hash, title, author, … }]). Pass both (picked together) so highlights reach the right book.
+ */
+export function importReadestFiles(files: Array<{ name: string; text: string }>): ImportedBook[] {
+  const lib = new Map<string, { title?: string; author?: string }>()
+  for (const f of files) {
+    if (f.name !== 'library.json') continue
+    const l = JSON.parse(f.text)
+    if (Array.isArray(l)) for (const b of l) if (b?.hash && !b.deletedAt) lib.set(b.hash, { title: b.title || undefined, author: b.author || undefined })
+  }
+  return files.filter(f => f.name !== 'library.json').map(f => {
+    const c = JSON.parse(f.text)
+    const hash: unknown = c.bookHash ?? (Array.isArray(c.booknotes) ? c.booknotes.find((n: any) => n?.bookHash)?.bookHash : undefined)
+    return importReadest(f.text, typeof hash === 'string' ? lib.get(hash) : undefined)
+  })
+}

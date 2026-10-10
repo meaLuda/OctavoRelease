@@ -1,5 +1,6 @@
 import { setIcon, Platform } from 'obsidian'
 import { HIGHLIGHT_COLORS, type HighlightColor } from '@octavo/shared'
+import { collectTags } from './tags'
 
 export const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, parent?: HTMLElement, text?: string) => {
   const e = document.createElement(tag)
@@ -136,15 +137,21 @@ export interface PopoverActions {
   color(c: HighlightColor): void
   underline(): void
   note(): void
+  /** Add or edit tags (creates the highlight first when used on a fresh selection). */
+  tags?(): void
   copyLink(): void
+  /** "Copy as…" submenu: copy templates and citation. */
+  copyAs?(e: MouseEvent): void
   define(): void
   ask(): void
+  /** Summarise the selection with AI (fresh selections only). */
+  summarise?(): void
   speak(): void
   remove?(): void
   openInNote?(): void
 }
 
-/** Selection / highlight popover: five colours + underline + Note + Copy link + Define + Ask. */
+/** Selection / highlight popover: five colours + underline + Note + Tags + Copy link + Define + Ask. */
 export class SelectionPopover {
   readonly el: HTMLElement
   constructor(private root: HTMLElement) {
@@ -165,16 +172,19 @@ export class SelectionPopover {
     const u = iconButton(row, 'underline', 'Underline', () => actions.underline())
     if (current?.underline) u.addClass('is-active')
     const tools = el('div', 'octavo-popover-tools', p)
-    const tool = (icon: string, label: string, fn: () => void) => {
+    const tool = (icon: string, label: string, fn: (e: MouseEvent) => void) => {
       const b = el('button', 'octavo-tool', tools)
       setIcon(el('span', '', b), icon)
       el('span', 'octavo-tool-label', b, label)
-      b.addEventListener('click', e => { e.stopPropagation(); fn() })
+      b.addEventListener('click', e => { e.stopPropagation(); fn(e) })
     }
     tool('sticky-note', 'Note', actions.note)
+    if (actions.tags) tool('tag', 'Tags', actions.tags)
     tool('link', 'Copy link', actions.copyLink)
+    if (actions.copyAs) tool('clipboard-copy', 'Copy as…', actions.copyAs)
     tool('book-a', 'Define', actions.define)
     tool('sparkles', 'Ask', actions.ask)
+    if (actions.summarise) tool('list', 'Summarise', actions.summarise)
     tool('volume-2', 'Speak', actions.speak)
     if (actions.openInNote) tool('file-text', 'In note', actions.openInNote)
     if (actions.remove) tool('trash-2', 'Remove', actions.remove)
@@ -235,4 +245,33 @@ export class SidePanel {
     this.root.removeClass('octavo-panel-open')
   }
   get isOpen(): boolean { return this.el.isShown() }
+}
+
+/**
+ * Tag filter chips for a highlights sidebar. `selected` holds lower-case tags and is kept across redraws;
+ * renders nothing when no highlight has tags.
+ */
+export function tagFilterChips(parent: HTMLElement, items: Iterable<{ tags?: string[] }>, selected: Set<string>, onChange: () => void): void {
+  const tags = collectTags(items)
+  for (const s of [...selected]) if (!tags.some(t => t.tag.toLowerCase() === s)) selected.delete(s)
+  if (!tags.length) return
+  const row = parent.createDiv({ cls: 'octavo-hl-chips octavo-hl-tags', attr: { role: 'group', 'aria-label': 'Filter by tag' } })
+  for (const { tag, count } of tags) {
+    const low = tag.toLowerCase()
+    const b = row.createEl('button', { cls: 'octavo-chip', text: `#${tag}`, attr: { 'aria-label': `Only #${tag} (${count})` } })
+    const sync = () => { b.toggleClass('is-active', selected.has(low)); b.setAttribute('aria-pressed', String(selected.has(low))) }
+    sync()
+    b.addEventListener('click', e => {
+      e.stopPropagation()
+      if (selected.has(low)) selected.delete(low); else selected.add(low)
+      sync()
+      onChange()
+    })
+  }
+}
+
+/** The tags of a highlight, shown on its sidebar card. */
+export function cardTags(card: HTMLElement, tags: string[] | undefined): void {
+  if (!tags?.length) return
+  card.createDiv({ cls: 'octavo-hl-tagline', text: tags.map(t => `#${t}`).join(' ') })
 }

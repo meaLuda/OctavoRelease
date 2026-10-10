@@ -1,12 +1,12 @@
 import { App, Modal, Notice, Setting, TFile, moment } from 'obsidian'
 import {
-  cleanBookName, importAnnotator, importElton, importWeave, importKindle, importKoreaderSidecar, importKoreaderJson, importReadest,
-  parseHighlights, upsertHighlight, type ImportedBook,
+  cleanBookName, importAnnotator, importZotero, isZoteroNote, importElton, importWeave, importKindle, importKoreaderSidecar, importKoreaderJson, importReadestFiles,
+  parseHighlights, upsertHighlight, citekeyFrom, importNotePath, type ImportedBook, type NoteKind,
 } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import { isBookFile } from './BookLibrary'
 
-type Source = 'annotator' | 'elton' | 'weave' | 'kindle' | 'koreader' | 'readest'
+type Source = 'annotator' | 'elton' | 'weave' | 'kindle' | 'koreader' | 'readest' | 'zotero'
 
 const SOURCES: Array<[Source, string, string]> = [
   ['annotator', 'Annotator', 'Scans your vault for Annotator notes (annotation-target).'],
@@ -14,7 +14,8 @@ const SOURCES: Array<[Source, string, string]> = [
   ['weave', 'Weave EPUB Reader', 'Reads reading position and status from Weave data notes.'],
   ['kindle', 'Kindle', 'Pick your “My Clippings.txt” from the Kindle’s documents folder.'],
   ['koreader', 'KOReader', 'Pick metadata.*.lua sidecars (book.sdr folders) or an exported highlights .json.'],
-  ['readest', 'Readest', 'Pick a book’s config.json from Readest’s data folder.'],
+  ['readest', 'Readest', 'Pick a book’s config.json and library.json from Readest’s Books folder.'],
+  ['zotero', 'Zotero', 'Scans your vault for Zotero Integration literature notes (annotations with zotero://open-pdf links) and adds them to the matching PDF.'],
 ]
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim()
@@ -43,6 +44,7 @@ export class ImportModal extends Modal {
   private async run(source: Source) {
     let books: ImportedBook[] = []
     const vault = this.app.vault
+    const sourcePaths = new Set<string>() // the notes highlights were read from: never written to
     try {
       if (source === 'annotator' || source === 'weave') {
         for (const f of vault.getMarkdownFiles()) {
@@ -51,8 +53,18 @@ export class ImportModal extends Modal {
           const md = await vault.cachedRead(f)
           if (source === 'weave' && !md.includes('weave-epub-state')) continue
           const b = source === 'annotator' ? importAnnotator(md) : importWeave(md)
-          if (b) books.push(b)
+          if (b) { books.push(b); sourcePaths.add(f.path) }
         }
+      } else if (source === 'zotero') {
+        for (const f of vault.getMarkdownFiles()) {
+          const fm = this.app.metadataCache.getFileCache(f)?.frontmatter
+          if (fm?.['octavo-id'] || fm?.['octavo-export']) continue
+          const md = await vault.cachedRead(f)
+          if (!isZoteroNote(md)) continue
+          const b = importZotero(md)
+          if (b) { books.push(b); sourcePaths.add(f.path) }
+        }
+        if (!books.length) { new Notice('No Zotero annotations found. Import them into a note with Zotero Integration first.'); return }
       } else if (source === 'elton') {
         const read = async (p: string) => (await vault.adapter.exists(p)) ? vault.adapter.read(p) : null
         const hl = await read('reading-highlights.json')
@@ -67,20 +79,22 @@ export class ImportModal extends Modal {
           else books.push(importKoreaderSidecar(t))
         }
       } else if (source === 'readest') {
-        for (const f of await this.pickFiles('.json')) books.push(importReadest(await f.text()))
+        const files = await Promise.all((await this.pickFiles('.json')).map(async f => ({ name: f.name, text: await f.text() })))
+        books = importReadestFiles(files)
+        if (books.some(b => !b.title && b.highlights.length)) { new Notice('Select library.json (in Readest’s Books folder) together with config.json so highlights reach the right book.'); return }
       }
     } catch (e) {
       new Notice(`Import failed: ${(e as Error).message}`)
       return
     }
-    const r = await importBooks(this.plugin, books)
+    const r = await importBooks(this.plugin, books, { source: SOURCES.find(s => s[0] === source)?.[1] ?? 'Imported', sourcePaths })
     new Notice(`Imported ${r.highlights} highlight${r.highlights === 1 ? '' : 's'} into ${r.notes} book note${r.notes === 1 ? '' : 's'}${r.skipped ? ` (${r.skipped} duplicates skipped)` : ''}.`)
   }
 
   onClose() { this.contentEl.empty() }
 }
 
-export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[]) {
+export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[], opts: { source?: string; sourcePaths?: Set<string> } = {}) {
   const app = plugin.app
   const bookFiles = app.vault.getFiles().filter(f => isBookFile(f))
   let notes = 0, highlights = 0, skipped = 0
@@ -109,7 +123,8 @@ export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[]) {
     if (!note && file) note = await plugin.library.ensureNote(file, { id: `import-${Date.now().toString(36)}`, title, author: b.author, format: file.extension })
     if (!note) {
       if (!b.highlights.length) continue // progress for a book that isn't in this vault: nothing worth a note
-      note = await orphanNote(plugin, title, b.author)
+      note = await orphanNote(plugin, title, b.author, opts.source ?? 'Imported', opts.sourcePaths ?? new Set())
+      if (!note) { console.warn(`Octavo: skipped importing "${title}": its note names are taken by other notes`); continue }
     }
     notes++
     const existing = new Set(parseHighlights(await app.vault.read(note)).map(h => norm(h.anchor.quote.exact)))
@@ -124,6 +139,7 @@ export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[]) {
     const cur = plugin.library.getProps(note)
     if (b.position?.cfi && !cur.position) props.position = b.position.cfi
     if (b.position?.fraction !== undefined && !(Number(cur.progress) > 0)) props.progress = Math.round(b.position.fraction * 1000) / 1000
+    if (b.citekey && !citekeyFrom(cur)) props.citekey = b.citekey
     if (b.status && (!cur.status || cur.status === 'reading')) props.status = b.status
     if (b.lastRead && !cur['last-read']) props['last-read'] = moment(b.lastRead).format('YYYY-MM-DDTHH:mm')
     await plugin.library.setProps(note, props)
@@ -131,12 +147,25 @@ export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[]) {
   return { notes, highlights, skipped }
 }
 
-/** A note for a book that isn't in the vault (e.g. Kindle). It is linked automatically if the book is added later with the same title. */
-async function orphanNote(plugin: OctavoPlugin, title: string, author?: string): Promise<TFile> {
+/**
+ * A note for a book that isn't in the vault (e.g. Kindle). It is linked automatically if the book is added later with the
+ * same title. An existing note is reused only when it is a book note: never the note the highlights were imported from
+ * (a Zotero literature note) or any other note; then `<title> (<source>).md` is used, else the book is skipped (null).
+ */
+async function orphanNote(plugin: OctavoPlugin, title: string, author: string | undefined, source: string, sourcePaths: Set<string>): Promise<TFile | null> {
   const app = plugin.app
   const folder = plugin.settings.booksFolder || 'Books'
-  const safe = title.replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim().slice(0, 120) || 'Imported book'
-  const path = `${folder}/${safe}.md`
+  const kindAt = (p: string): NoteKind => {
+    const f = app.vault.getAbstractFileByPath(p)
+    if (!f) return 'missing'
+    if (!(f instanceof TFile) || f.extension !== 'md' || sourcePaths.has(f.path)) return 'other'
+    const fm = app.metadataCache.getFileCache(f)?.frontmatter
+    if (fm?.['octavo-id']) return 'book'
+    const tags = Array.isArray(fm?.tags) ? fm.tags.map(String) : typeof fm?.tags === 'string' ? fm.tags.split(/[,\s]+/) : []
+    return tags.includes('book') && !fm?.['octavo-export'] && !fm?.['annotation-target'] ? 'book' : 'other'
+  }
+  const path = importNotePath(folder, title, source, kindAt)
+  if (!path) return null
   const f = app.vault.getAbstractFileByPath(path)
   if (f instanceof TFile) return f
   if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder).catch(() => {})

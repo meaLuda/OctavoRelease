@@ -1,5 +1,6 @@
-import type { HighlightColor } from '@octavo/shared'
+import { DEFAULT_COPY_TEMPLATES, DEFAULT_EXPORT_HIGHLIGHT_TEMPLATE, DEFAULT_EXPORT_NOTE_TEMPLATE, type CopyFormat, type HighlightColor } from '@octavo/shared'
 import type { PdfBookLayout } from './pdf/layout'
+import type { SmartCollection } from './library/organise'
 
 export type ThemeId = 'original' | 'quiet' | 'paper' | 'bold' | 'calm' | 'focus' | 'black'
 export type Appearance = 'auto' | 'light' | 'dark'
@@ -58,9 +59,24 @@ export interface OctavoSettings {
   stats: { minutesByDay: Record<string, number>; finishedByYear: Record<string, number> }
   pace: unknown
   tts: { voice: string; rate: number; engine: 'system' | 'cloud'; cloudVoice: string }
-  ai: { provider: 'none' | 'openai' | 'anthropic' | 'ollama'; apiKey: string; model: string; baseUrl: string }
-  cloud: { apiBase: string; email: string; token: string }
+  /**
+   * provider 'octavo' = Octavo AI (Cloud + AI, no key). allowFallback lets Octavo AI use DeepSeek when Gemini is down.
+   * octavoDefaulted: Octavo AI was made the default once for a Cloud + AI account (a later choice is kept).
+   */
+  ai: { provider: 'none' | 'octavo' | 'openai' | 'anthropic' | 'ollama'; apiKey: string; model: string; baseUrl: string; allowFallback: boolean; octavoDefaulted?: boolean }
+  /** labels: last collections/tags sent to the Cloud per cloud book id (so only real changes are synced). */
+  cloud: { apiBase: string; email: string; token: string; labels?: Record<string, string> }
   autoScrollSpeed: number
+  /** Small, dismissible Octavo Cloud hints in the reader (big book, scanned PDF, read-aloud). */
+  cloudPrompts: boolean
+  /** Hints already shown, as `kind:<book id>` (each shows at most once per book). */
+  promptsSeen: string[]
+  /** "Copy as…" templates ({{text}} {{page}} {{label}} {{link}} {{color}} {{book}} {{author}} {{note}} {{date}} {{citekey}}). */
+  copyTemplates: Record<CopyFormat, string>
+  /** "Export highlights to note": folder, note template (rendered once) and per-highlight template. */
+  exportFolder: string
+  exportNoteTemplate: string
+  exportHighlightTemplate: string
   library: {
     folders: string[] // empty = whole vault
     hidden: string[] // book paths hidden from the library
@@ -68,6 +84,12 @@ export interface OctavoSettings {
     mode: 'grid' | 'list'
     size: number // card width px
     sort: 'recent' | 'title' | 'author' | 'progress' | 'added'
+    /** Saved filters shown as chips. */
+    smart: SmartCollection[]
+    /** Books dropped into the scanned folders appear without reopening the library. */
+    watch: boolean
+    /** Where downloaded Cloud books are placed. */
+    cloudFolder: string
   }
 }
 
@@ -102,8 +124,14 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   stats: { minutesByDay: {}, finishedByYear: {} },
   pace: null,
   tts: { voice: '', rate: 1, engine: 'system', cloudVoice: 'af_heart' },
-  ai: { provider: 'none', apiKey: '', model: '', baseUrl: '' },
+  ai: { provider: 'none', apiKey: '', model: '', baseUrl: '', allowFallback: true },
   cloud: { apiBase: 'https://octavo.devformat.tools', email: '', token: '' },
   autoScrollSpeed: 40,
-  library: { folders: [], hidden: [], minPdfMB: 2, mode: 'grid', size: 150, sort: 'recent' },
+  cloudPrompts: true,
+  promptsSeen: [],
+  copyTemplates: { ...DEFAULT_COPY_TEMPLATES },
+  exportFolder: 'Books',
+  exportNoteTemplate: DEFAULT_EXPORT_NOTE_TEMPLATE,
+  exportHighlightTemplate: DEFAULT_EXPORT_HIGHLIGHT_TEMPLATE,
+  library: { folders: [], hidden: [], minPdfMB: 2, mode: 'grid', size: 150, sort: 'recent', smart: [], watch: true, cloudFolder: 'Library' },
 }
