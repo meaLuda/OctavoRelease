@@ -208,8 +208,7 @@ export class PdfView extends FileView {
     const inner = this.container.querySelector('.pdfViewer') as HTMLElement
     inner.empty()
     const s = this.plugin.settings
-    const dark = this.containerEl.doc.body.hasClass('theme-dark')
-    this.darkKey = `${dark}:${s.pdfDark}`
+    this.darkKey = this.pageLook().key
     const eventBus = new V.EventBus()
     const linkService = new V.PDFLinkService({ eventBus, externalLinkTarget: 2 })
     const findController = new V.PDFFindController({ eventBus, linkService })
@@ -721,13 +720,31 @@ export class PdfView extends FileView {
     if (scanned && this.file) void maybeCloudPrompt(this.plugin, this.root, 'scan', this.file, this.bookId, { isStub: this.isStub })
   }
 
-  /** Dark mode: recolour paper and ink, keep photos as photos (pdf.js pageColors and CSS invert made them negatives). */
+  /**
+   * How PDF pages look, from the same Appearance choices as books: Light/Dark/Auto decides dark, the theme gives
+   * the page and ink colours (Original in light = the PDF as printed), and the PDF "Dark mode" row decides how
+   * to darken (smart keeps the theme's dark colours, sepia, or Original = never darken this PDF).
+   */
+  private pageLook(): { dark: boolean; colors: { background: string; foreground: string; photoDim: number } | null; key: string } {
+    const s = this.plugin.settings
+    const look = resolveLook(s, this.containerEl.doc.body.hasClass('theme-dark'))
+    let colors: { background: string; foreground: string; photoDim: number } | null = null
+    if (look.dark) {
+      if (s.pdfDark === 'sepia') colors = { background: '#2b251c', foreground: '#d8c8a8', photoDim: 0.8 }
+      else if (s.pdfDark === 'invert-except-images') colors = s.theme === 'original' ? { background: '#1e1e1e', foreground: '#d6d6d6', photoDim: 0.85 } : { background: look.colors.bg, foreground: look.colors.fg, photoDim: 0.85 }
+    } else if (s.theme !== 'original') {
+      colors = { background: look.colors.bg, foreground: look.colors.fg, photoDim: 1 }
+    }
+    const dark = look.dark && !!colors
+    return { dark, colors, key: JSON.stringify([dark, colors]) }
+  }
+
+  /** Recolour a rendered page with the page look: paper and ink take the theme's colours, photos stay photos. */
   private darkenPage(n: number) {
-    const pv = this.pageView(n), s = this.plugin.settings
+    const pv = this.pageView(n)
     const canvas = pv?.canvas as HTMLCanvasElement | undefined
-    const colors = s.pdfDark === 'invert-except-images' ? { background: '#1e1e1e', foreground: '#d6d6d6', photoDim: 0.85 }
-      : s.pdfDark === 'sepia' ? { background: '#2b251c', foreground: '#d8c8a8', photoDim: 0.8 } : null
-    if (!canvas?.width || !colors || !this.containerEl.doc.body.hasClass('theme-dark') || canvas.hasClass('octavo-recoloured')) return
+    const colors = this.pageLook().colors
+    if (!canvas?.width || !colors || canvas.hasClass('octavo-recoloured')) return
     try {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return
@@ -1123,11 +1140,11 @@ export class PdfView extends FileView {
 
   applyLook() {
     const s = this.plugin.settings
-    const dark = this.containerEl.doc.body.hasClass('theme-dark')
-    this.root.toggleClass('octavo-dark', dark)
+    const look = this.pageLook()
+    this.root.toggleClass('octavo-dark', look.dark)
     this.root.toggleClass('octavo-footer-off', s.footer === 'off')
     this.root.dataset.pdfDark = s.pdfDark
-    if (this.viewer && this.darkKey !== `${dark}:${s.pdfDark}`) this.buildViewer(this.page)
+    if (this.viewer && this.darkKey !== look.key) this.buildViewer(this.page)
     this.styleTextView()
     this.setMode(s.pdfMode)
     this.updateFooter()
