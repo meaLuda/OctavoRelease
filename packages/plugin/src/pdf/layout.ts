@@ -19,7 +19,8 @@ export interface ResolvedLayout { fit: PdfFit; crop: boolean; scroll: PdfScroll;
 export function resolveLayout(saved: PdfBookLayout | undefined, defaults: { crop: boolean }): ResolvedLayout {
   const zoom = Number(saved?.zoom)
   return {
-    fit: saved?.fit === 'width' || saved?.fit === 'page' ? saved.fit : 'auto',
+    // Width by default: the page fills the reading width (readable print); Auto (whole page) and Page are per book
+    fit: saved?.fit === 'auto' || saved?.fit === 'page' ? saved.fit : 'width',
     crop: typeof saved?.crop === 'boolean' ? saved.crop : defaults.crop,
     // Book style by default: one whole page on screen, turned like a page (Apple Books, Kindle); continuous
     // scrolling is the per-book alternative
@@ -203,11 +204,14 @@ export function joinCopiedLines(text: string): string {
  * default ("vertical") and zoom relative to the old page-width fit, so both are dropped; explicit choices of fit,
  * crop, direction and two pages are kept.
  */
-export function upgradeLayouts(map: Record<string, PdfBookLayout>): Record<string, PdfBookLayout> {
+export function upgradeLayouts(map: Record<string, PdfBookLayout>, from = 1): Record<string, PdfBookLayout> {
   const out: Record<string, PdfBookLayout> = {}
   for (const [k, l] of Object.entries(map ?? {})) {
-    const { scroll, zoom, ...rest } = l
-    out[k] = scroll === 'paged' ? { ...rest, scroll } : rest
+    let next: PdfBookLayout = l
+    if (from < 2) { const { scroll, zoom, ...rest } = next; next = scroll === 'paged' ? { ...rest, scroll } : rest }
+    // version 3: Width became the default fit; "auto" was only ever saved as the old default
+    if (from < 3 && next.fit === 'auto') { const { fit, ...rest } = next; next = rest }
+    out[k] = next
   }
   return out
 }

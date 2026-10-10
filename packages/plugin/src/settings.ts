@@ -54,7 +54,7 @@ export interface OctavoSettings {
   pdfMode: 'pages' | 'text'
   /** Per-book PDF fit/crop/scroll/direction/zoom, keyed `phone:<book id>` / `wide:<book id>`. In plugin data, not the note. */
   pdfLayouts: Record<string, PdfBookLayout>
-  /** 2 = book-style paging is the default (older saved layouts upgraded once) */
+  /** 2 = book-style paging default, 3 = Width fit default (older saved layouts upgraded once each) */
   pdfLayoutVersion?: number
   dailyNoteLog: boolean
   goals: { enabled: boolean; dailyMinutes: number; yearlyBooks: number; restDaysPerWeek: number }

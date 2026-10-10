@@ -106,9 +106,9 @@ export default class OctavoPlugin extends Plugin {
       pdfLayouts: { ...data.pdfLayouts },
       tapZones: Array.isArray(data.tapZones) && data.tapZones.length === 9 ? data.tapZones : d.tapZones,
     }
-    if ((this.settings.pdfLayoutVersion ?? 1) < 2) {
-      this.settings.pdfLayouts = upgradeLayouts(this.settings.pdfLayouts)
-      this.settings.pdfLayoutVersion = 2
+    if ((this.settings.pdfLayoutVersion ?? 1) < 3) {
+      this.settings.pdfLayouts = upgradeLayouts(this.settings.pdfLayouts, this.settings.pdfLayoutVersion ?? 1)
+      this.settings.pdfLayoutVersion = 3
     }
   }
 
