@@ -276,7 +276,8 @@ export class PdfView extends FileView {
     if (v.spreadMode !== spread) v.spreadMode = spread
     this.root.toggleClass('is-paged', scroll === 3)
     this.root.toggleClass('is-spread', spread !== 0)
-    const fit = effectiveFit(L.fit)
+    // book style (Paged) with Auto fit shows the whole page on desktop; phones keep width (a whole page is too small)
+    const fit = L.scroll === 'paged' && L.fit === 'auto' && !phone ? 'page' : effectiveFit(L.fit)
     // margin trim is opt-in (Crop margins), as in Skim, PDF Expert and Zotero; spreads trim by clipping each page
     const trim = L.crop && spread ? this.spreadTrim() : null
     this.root.toggleClass('is-spread-trim', !!trim)
@@ -286,6 +287,10 @@ export class PdfView extends FileView {
     let base: number
     if (spread && pv1?.viewport && pv1.scale) {
       base = this.spreadFit(pv1, trim)
+    } else if (!crop && !phone && L.scroll === 'paged' && fit === 'page' && pv1?.viewport && pv1.scale) {
+      // book style: the whole page fits between the bars (pdf.js 'page-fit' ignores our padding and clips it)
+      const unitW = pv1.viewport.width / pv1.scale, unitH = pv1.viewport.height / pv1.scale
+      base = fitScale('page', unitW, unitH, this.container.clientWidth, this.container.clientHeight - 88 - 16, this.gutter(), null)
     } else if (!crop && !phone) {
       // Auto is pdf.js's (Firefox's) automatic zoom: page width, capped at 125% so one page on a big screen stays
       // a comfortable size; Width and Page are pdf.js's presets

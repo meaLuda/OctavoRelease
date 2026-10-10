@@ -21,7 +21,9 @@ export function resolveLayout(saved: PdfBookLayout | undefined, defaults: { crop
   return {
     fit: saved?.fit === 'width' || saved?.fit === 'page' ? saved.fit : 'auto',
     crop: typeof saved?.crop === 'boolean' ? saved.crop : defaults.crop,
-    scroll: saved?.scroll === 'paged' ? 'paged' : 'vertical',
+    // Book style by default: one whole page on screen, turned like a page (Apple Books, Kindle); continuous
+    // scrolling is the per-book alternative
+    scroll: saved?.scroll === 'vertical' ? 'vertical' : 'paged',
     dir: saved?.dir === 'rtl' ? 'rtl' : 'ltr',
     zoom: Number.isFinite(zoom) && zoom > 0 ? clampZoom(zoom) : 1,
     // one page is the default everywhere (as in Chrome, Firefox, Acrobat, Obsidian); two pages is opt-in per book
@@ -194,4 +196,18 @@ export function joinCopiedLines(text: string): string {
     else out += ' ' + t
   })
   return out.replace(/\n{3,}/g, '\n\n')
+}
+
+/**
+ * One-time upgrade of saved per-book layouts to book-style paging (layout version 2). Older saves stored the old
+ * default ("vertical") and zoom relative to the old page-width fit, so both are dropped; explicit choices of fit,
+ * crop, direction and two pages are kept.
+ */
+export function upgradeLayouts(map: Record<string, PdfBookLayout>): Record<string, PdfBookLayout> {
+  const out: Record<string, PdfBookLayout> = {}
+  for (const [k, l] of Object.entries(map ?? {})) {
+    const { scroll, zoom, ...rest } = l
+    out[k] = scroll === 'paged' ? { ...rest, scroll } : rest
+  }
+  return out
 }

@@ -1,4 +1,8 @@
-Octavo Reader 1.1.0 beta 3
+Octavo Reader 1.1.0 beta 4
+
+New in beta 4
+- PDFs read like a book by default: one whole page on screen, turned with the arrow keys, a click near the page edge, or one swipe or scroll per page. Continuous scrolling is still a choice per book (Appearance, Layout, Scroll).
+- Saved PDF layouts from earlier versions are reset once so every book starts in the new mode.
 
 New in beta 3
 - PDF: one page at a time by default at any window size, with automatic zoom like Firefox (page width, never oversized on a big screen).

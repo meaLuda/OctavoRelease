@@ -1,5 +1,6 @@
 import { addIcon, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type TAbstractFile } from 'obsidian'
 import { Pace, computeStreak, parseHighlights as parseHighlightsFresh, buildLiteratureNote, refreshLiteratureNote, resolveLiteratureNotePath, EXPORT_BOOK_ID, citekeyFrom, type Highlight, type CopyFormat, type LiteratureInput } from '@octavo/shared'
+import { upgradeLayouts } from './pdf/layout'
 import { DEFAULT_SETTINGS, type OctavoSettings } from './settings'
 import { BookLibrary, BOOK_EXTENSIONS, isBookFile } from './library/BookLibrary'
 import { EpubView, EPUB_VIEW } from './epub/EpubView'
@@ -104,6 +105,10 @@ export default class OctavoPlugin extends Plugin {
       overrides: { ...data.overrides },
       pdfLayouts: { ...data.pdfLayouts },
       tapZones: Array.isArray(data.tapZones) && data.tapZones.length === 9 ? data.tapZones : d.tapZones,
+    }
+    if ((this.settings.pdfLayoutVersion ?? 1) < 2) {
+      this.settings.pdfLayouts = upgradeLayouts(this.settings.pdfLayouts)
+      this.settings.pdfLayoutVersion = 2
     }
   }
 
