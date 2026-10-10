@@ -12,8 +12,9 @@ export const sameSize = (a: { w?: number; h?: number }, b: { w?: number; h?: num
   !a.w || !b.w || (Math.abs(a.w - b.w) <= a.w * 0.02 && Math.abs((a.h ?? 0) - (b.h ?? 0)) <= (a.h ?? 0) * 0.02)
 
 /** What a book remembers (per device: phone and desktop want different zoom). */
-export interface PdfBookLayout { fit?: PdfFit; crop?: boolean; scroll?: PdfScroll; dir?: PdfDir; zoom?: number; box?: Box | null; t?: number }
-export interface ResolvedLayout { fit: PdfFit; crop: boolean; scroll: PdfScroll; dir: PdfDir; zoom: number }
+export type PdfSpread = 'one' | 'two'
+export interface PdfBookLayout { fit?: PdfFit; crop?: boolean; scroll?: PdfScroll; dir?: PdfDir; zoom?: number; spread?: PdfSpread; box?: Box | null; t?: number }
+export interface ResolvedLayout { fit: PdfFit; crop: boolean; scroll: PdfScroll; dir: PdfDir; zoom: number; spread: PdfSpread }
 
 export function resolveLayout(saved: PdfBookLayout | undefined, defaults: { crop: boolean }): ResolvedLayout {
   const zoom = Number(saved?.zoom)
@@ -23,6 +24,8 @@ export function resolveLayout(saved: PdfBookLayout | undefined, defaults: { crop
     scroll: saved?.scroll === 'paged' ? 'paged' : 'vertical',
     dir: saved?.dir === 'rtl' ? 'rtl' : 'ltr',
     zoom: Number.isFinite(zoom) && zoom > 0 ? clampZoom(zoom) : 1,
+    // one page is the default everywhere (as in Chrome, Firefox, Acrobat, Obsidian); two pages is opt-in per book
+    spread: saved?.spread === 'two' ? 'two' : 'one',
   }
 }
 
@@ -47,17 +50,11 @@ export const clampZoom = (z: number) => Math.min(6, Math.max(0.5, z))
 export const effectiveFit = (fit: PdfFit): 'width' | 'page' => fit === 'page' ? 'page' : 'width'
 
 /**
- * Two-page spread: Auto fit, continuous scroll, not zoomed, never on phones, and only when the WHOLE pair fits
- * on screen with each page still ≥ 600px wide. A spread sized to the width makes each page taller than the
- * screen, so you read down the left page, scroll back up for the right one, then down again.
- * `viewH`/`aspect` (page width ÷ height) come from the open book; without them only the width test applies.
+ * Two pages side by side only when the reader chose "Two" for this book (never automatic: readers dislike apps
+ * that switch to spreads because the window is wide), and never on phones. When the window is small the pair is
+ * simply shown smaller, never silently replaced by one page.
  */
-export const useSpread = (l: ResolvedLayout, viewW: number, phone: boolean, viewH = Infinity, aspect = 0) => {
-  if (l.fit !== 'auto' || l.scroll !== 'vertical' || l.zoom !== 1 || phone || viewW < 1550) return false
-  if (!aspect || !Number.isFinite(viewH)) return true
-  const pageW = viewH * aspect // each page at full height
-  return pageW >= 600 && 2 * pageW + 40 <= viewW
-}
+export const useSpread = (l: ResolvedLayout, phone: boolean) => l.spread === 'two' && !phone
 
 /**
  * Ink bounding box of a low-res render. Paper colour comes from the corners (works for tinted pages);

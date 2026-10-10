@@ -60,16 +60,11 @@ describe('fit and crop scale math', () => {
   })
   it('spread only on wide desktop views at fit', () => {
     const L = resolveLayout(undefined, { crop: false })
-    expect(useSpread(L, 1600, false)).toBe(true)
-    expect(useSpread(L, 1600, true)).toBe(false)
-    expect(useSpread({ ...L, zoom: 2 }, 1600, false)).toBe(false)
-    expect(useSpread({ ...L, scroll: 'paged' }, 1600, false)).toBe(false)
-    // the whole pair must fit on screen: a 2000x1130 window with book pages (0.66) fits two 746px pages
-    expect(useSpread(L, 2000, false, 1130, 0.66)).toBe(true)
-    // a wide but short window would make each page taller than the screen at width-fit: no spread
-    expect(useSpread(L, 1600, false, 700, 0.66)).toBe(false)   // pages would be only 462px wide
-    // landscape pages (slides) never pair up unless both fit
-    expect(useSpread(L, 1600, false, 1000, 1.33)).toBe(false)
+    expect(useSpread(L, false)).toBe(false)               // never automatic: one page by default
+    const T = { ...L, spread: 'two' as const }
+    expect(useSpread(T, false)).toBe(true)
+    expect(useSpread(T, true)).toBe(false)                // never on phones
+    expect(useSpread({ ...T, zoom: 2 }, false)).toBe(true) // zooming keeps the pair
   })
 })
 
@@ -105,10 +100,10 @@ describe('zoom', () => {
 
 describe('per-book layout', () => {
   it('defaults: auto fit, vertical, zoom 1; crop from device default', () => {
-    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'auto', crop: true, scroll: 'vertical', dir: 'ltr', zoom: 1 })
+    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'auto', crop: true, scroll: 'vertical', dir: 'ltr', zoom: 1, spread: 'one' })
   })
   it('saved values win and are sanitised', () => {
-    expect(resolveLayout({ fit: 'page', crop: false, scroll: 'paged', zoom: 1.7 }, { crop: true })).toEqual({ fit: 'page', crop: false, scroll: 'paged', dir: 'ltr', zoom: 1.7 })
+    expect(resolveLayout({ fit: 'page', crop: false, scroll: 'paged', zoom: 1.7 }, { crop: true })).toEqual({ fit: 'page', crop: false, scroll: 'paged', dir: 'ltr', zoom: 1.7, spread: 'one' })
     expect(resolveLayout({ fit: 'bogus' as any, zoom: 99 }, { crop: false })).toMatchObject({ fit: 'auto', zoom: 6 })
   })
   it('keeps the most recent books', () => {

@@ -1,7 +1,9 @@
-Octavo Reader 1.1.0 beta 2
+Octavo Reader 1.1.0 beta 3
 
-New in beta 2
-- PDF: on a big screen, two pages sit side by side only when the whole pair fits, so you read left, right, then scroll once. Otherwise one page at a time.
+New in beta 3
+- PDF: one page at a time by default at any window size, with automatic zoom like Firefox (page width, never oversized on a big screen).
+- Two pages side by side is now a choice per book (Appearance, Layout, Pages: Two), paired like a printed book (cover alone, then facing pages) and scrolling normally.
+- Crop margins works in two-page view too; a zoom you set keeps its size when the window changes; one page turn per trackpad swipe in Paged mode.
 
 In beta 1
 
