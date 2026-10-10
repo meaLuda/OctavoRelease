@@ -13,7 +13,8 @@ export function resolveLook(s: OctavoSettings, obsidianDark: boolean): ResolvedL
   let colors = { ...(dark ? preset.dark : preset.light) }
   if (s.nightLight && !dark) {
     const k = nightLightFactor()
-    if (k > 0) colors = { ...colors, bg: mix(colors.bg, '#f3d9a8', 0.45 * k) }
+    // warm the theme's own colour (less blue, a little less green) so themes stay distinct at night
+    if (k > 0) colors = { ...colors, bg: warm(colors.bg, k) }
   }
   return { colors, typo, dark }
 }
@@ -25,11 +26,13 @@ export function themeTypography(s: OctavoSettings): Typography {
   return { ...DEFAULT_TYPOGRAPHY, ...preset.typography, ...(s.customize ? o : {}), ...(o.fontSize ? { fontSize: o.fontSize } : {}) }
 }
 
-function mix(a: string, b: string, t: number): string {
-  const p = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
-  const [x, y] = [p(a), p(b)]
-  return '#' + x.map((v, i) => Math.round(v + (y[i]! - v) * t).toString(16).padStart(2, '0')).join('')
+/** Night-light warmth: scale blue down by up to 18% and green by up to 5%, keeping each theme's character. */
+export function warm(hex: string, k: number): string {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
+  const out = [r!, g! * (1 - 0.05 * k), b! * (1 - 0.18 * k)]
+  return '#' + out.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('')
 }
+
 
 const FONT_LABELS: Array<[FontChoice, string]> = [
   ['publisher', 'Original'], ['obsidian', 'Obsidian text font'], ['serif', 'Serif'], ['sans', 'Sans'],
@@ -105,6 +108,7 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
   const nl = row(general, 'Night light')
   const nlToggle = el('div', `checkbox-container${s.nightLight ? ' is-enabled' : ''}`, nl)
   nlToggle.onclick = () => { s.nightLight = !s.nightLight; save(); rerender() }
+  if (s.nightLight && nightLightFactor() > 0) el('div', 'octavo-ap-note', general).setText('Warming the page now (evening hours). Themes keep their colours, just warmer.')
 
   if (opts.pdf && s.pdfMode !== 'text') return
 

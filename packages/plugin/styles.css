@@ -573,3 +573,6 @@ body.is-phone:not(.octavo-immersive) .octavo-tts-bar { bottom: calc(var(--navbar
 .octavo-pdf.is-spread-trim .pdfViewer .spread { filter: drop-shadow(0 0 1px var(--background-modifier-border-hover)) drop-shadow(0 1px 3px rgba(0, 0, 0, .18)); }
 /* page edges stay visible on dark themes */
 .octavo-pdf.octavo-dark .pdfViewer .page { box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), var(--shadow-s); }
+
+/* Appearance panel: small explanatory line under a row */
+.octavo-ap-note { font-size: var(--font-ui-smaller); color: var(--text-muted); margin: -4px 0 8px; }
