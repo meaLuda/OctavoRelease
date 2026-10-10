@@ -99,12 +99,12 @@ describe('zoom', () => {
 })
 
 describe('per-book layout', () => {
-  it('defaults: auto fit, book-style paging, zoom 1; crop from device default', () => {
-    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'auto', crop: true, scroll: 'paged', dir: 'ltr', zoom: 1, spread: 'one' })
+  it('defaults: width fit, book-style paging, zoom 1; crop from device default', () => {
+    expect(resolveLayout(undefined, { crop: true })).toEqual({ fit: 'width', crop: true, scroll: 'paged', dir: 'ltr', zoom: 1, spread: 'one' })
   })
   it('saved values win and are sanitised', () => {
     expect(resolveLayout({ fit: 'page', crop: false, scroll: 'paged', zoom: 1.7 }, { crop: true })).toEqual({ fit: 'page', crop: false, scroll: 'paged', dir: 'ltr', zoom: 1.7, spread: 'one' })
-    expect(resolveLayout({ fit: 'bogus' as any, zoom: 99 }, { crop: false })).toMatchObject({ fit: 'auto', zoom: 6 })
+    expect(resolveLayout({ fit: 'bogus' as any, zoom: 99 }, { crop: false })).toMatchObject({ fit: 'width', zoom: 6 })
   })
   it('keeps the most recent books', () => {
     const map = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`b${i}`, { zoom: 1, t: i }]))
@@ -163,7 +163,9 @@ describe('paged direction', () => {
 describe('layout upgrade to book-style paging', () => {
   it('drops the old default scroll and zoom, keeps explicit choices', () => {
     const out = upgradeLayouts({ a: { fit: 'auto', scroll: 'vertical', zoom: 1.575, spread: 'one', crop: false }, b: { fit: 'width', scroll: 'paged', dir: 'rtl', zoom: 2, spread: 'two' } })
-    expect(out.a).toEqual({ fit: 'auto', spread: 'one', crop: false })
+    expect(out.a).toEqual({ spread: 'one', crop: false }) // the old default 'auto' fit is dropped too
+    expect(resolveLayout(out.a, { crop: false }).fit).toBe('width')
+    expect(upgradeLayouts({ c: { fit: 'auto', scroll: 'paged' } }, 2).c).toEqual({ scroll: 'paged' })
     expect(out.b).toEqual({ fit: 'width', scroll: 'paged', dir: 'rtl', spread: 'two' })
     expect(resolveLayout(out.a, { crop: false }).scroll).toBe('paged')
   })

@@ -1,4 +1,7 @@
-Octavo Reader 1.1.0 beta 4
+Octavo Reader 1.1.0 beta 5
+
+New in beta 5
+- PDFs fit the reading width by default, so print is easy to read; pages still turn one at a time (a tall page scrolls first, then turns). Whole page (Auto) and Page are still a choice per book.
 
 New in beta 4
 - PDFs read like a book by default: one whole page on screen, turned with the arrow keys, a click near the page edge, or one swipe or scroll per page. Continuous scrolling is still a choice per book (Appearance, Layout, Scroll).
