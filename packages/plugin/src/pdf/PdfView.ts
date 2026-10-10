@@ -22,6 +22,7 @@ import { mergeLines, imageCoverage, imageRects } from './geometry'
 import { recolourScan } from './scanDark'
 import { reflow, figureBands, continues } from './reflow'
 import { AreaSelect, type AreaPick } from './areaSelect'
+import { scrollStep, autoScrollAction, decideAxis, wheelLock, type Axis, type AxisGesture } from './autoScroll'
 import { viewportToPdfRect, pdfRectToViewport, footerPage, pageRef, pageLabel, hasOwnLabel, resolvePageInput, type PdfRect } from './region'
 import { renderRegion } from './regionRender'
 import {
@@ -124,7 +125,8 @@ export class PdfView extends FileView {
     this.container.addEventListener('click', e => this.onClick(e))
     // ctrl/cmd+wheel; a trackpad pinch arrives as ctrl+wheel with small deltas
     this.container.addEventListener('wheel', e => {
-      if (!(e.ctrlKey || e.metaKey)) { this.wheelTurn(e); return }
+      // a gesture locked sideways never turns the page
+      if (!(e.ctrlKey || e.metaKey)) { if (this.lockWheel(e) !== 'x') this.wheelTurn(e); return }
       e.preventDefault()
       this.zoomAt(Math.exp(-Math.max(-25, Math.min(25, e.deltaY)) / 125), e.clientX, e.clientY)
     }, { passive: false })
@@ -135,11 +137,16 @@ export class PdfView extends FileView {
     })
     this.container.addEventListener('copy', e => this.onCopy(e))
     this.wireTouch()
+    this.wireScrollLock()
     this.area = new AreaSelect(this.root, this.container, p => this.onAreaPicked(p), on => { if (on) { this.popover.hide(); this.chrome.hide() } })
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
     this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
-    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) void this.savePosition() })
+    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.stopAutoScroll(); void this.savePosition() } })
+    // auto-scroll holds while a finger or button is down (touch, click, selecting text)
+    this.root.addEventListener('pointerdown', () => { this.pointerHeld = true })
+    this.registerDomEvent(this.containerEl.doc, 'pointerup', () => { this.pointerHeld = false })
+    this.registerDomEvent(this.containerEl.doc, 'pointercancel', () => { this.pointerHeld = false })
     this.registerEvent(this.app.workspace.on('css-change', () => this.applyLook()))
     this.registerEvent(this.app.metadataCache.on('resolved', () => this.refreshBacklinks()))
     this.registerEvent(this.app.vault.on('modify', f => { if (f === this.note) void this.loadHighlights() }))
@@ -565,6 +572,126 @@ export class PdfView extends FileView {
     this.container.addEventListener('touchcancel', () => { pinch = null; swipe = null; this.wantScale = 0 }, { passive: true })
   }
 
+  // ───────────────────────── scroll lock ─────────────────────────
+
+  private wheelGesture: AxisGesture | null = null
+  /** The page is wider than the view (zoomed in, or a wide page), so it can move both ways. */
+  private isWide() { return this.container.scrollWidth > this.container.clientWidth + 4 }
+  private lockOn() { return this.plugin.settings.pdfScrollLock && this.mode === 'pages' && !this.area.active && this.isWide() }
+
+  /**
+   * Trackpad / wheel on a wide page: the first ~10 px decide the direction, and the rest of the gesture
+   * (until 200 ms of quiet) keeps to it. Returns the locked axis, or null when not locking.
+   */
+  private lockWheel(e: WheelEvent): Axis | null {
+    if (e.shiftKey || !this.lockOn()) { this.wheelGesture = null; return null }
+    const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientHeight : 1
+    const dx = e.deltaX * k, dy = e.deltaY * k
+    const r = wheelLock(this.wheelGesture, dx, dy, performance.now())
+    this.wheelGesture = r.gesture
+    if (r.suppress) {
+      e.preventDefault()
+      this.container.scrollBy(r.axis === 'x' ? dx : 0, r.axis === 'y' ? dy : 0)
+    }
+    return r.axis
+  }
+
+  /**
+   * Touch drag on a wide page: once the first ~10 px decide the direction, the other axis is held where the
+   * drag began (momentum included, until scrolling settles). Native scrolling keeps its momentum; pinches,
+   * text selection and area select are left alone.
+   */
+  private wireScrollLock() {
+    const c = this.container
+    let start: { x: number; y: number; left: number; top: number } | null = null
+    let pin: { axis: Axis; left: number; top: number } | null = null
+    let touching = false, idle = 0
+    const release = () => { pin = null; start = null }
+    const settle = () => { window.clearTimeout(idle); idle = window.setTimeout(release, 200) }
+    c.addEventListener('touchstart', e => {
+      window.clearTimeout(idle); release()
+      touching = true
+      if (e.touches.length !== 1 || this.hasSel() || !this.lockOn()) return
+      const t = e.touches[0]!
+      start = { x: t.clientX, y: t.clientY, left: c.scrollLeft, top: c.scrollTop }
+    }, { passive: true })
+    c.addEventListener('touchmove', e => {
+      if (e.touches.length !== 1) { release(); return } // a pinch zooms and pans freely
+      if (!start || pin) return
+      const t = e.touches[0]!, axis = decideAxis(t.clientX - start.x, t.clientY - start.y)
+      if (axis) pin = { axis, left: start.left, top: start.top }
+    }, { passive: true })
+    const end = (e: TouchEvent) => { if (e.touches.length) return; touching = false; if (pin) settle(); else start = null }
+    c.addEventListener('touchend', end, { passive: true })
+    c.addEventListener('touchcancel', end, { passive: true })
+    c.addEventListener('scroll', () => {
+      if (!pin) return
+      if (pin.axis === 'y' && c.scrollLeft !== pin.left) c.scrollLeft = pin.left
+      if (pin.axis === 'x' && c.scrollTop !== pin.top) c.scrollTop = pin.top
+      if (!touching) settle()
+    }, { passive: true })
+  }
+
+  // ───────────────────────── auto-scroll ─────────────────────────
+
+  private autoRaf = 0
+  private autoAcc = 0
+  private autoLast = 0
+  private autoBottomAt: number | null = null
+  private autoPaused = false
+  private pointerHeld = false
+  get autoScrolling(): boolean { return !!this.autoRaf }
+
+  /**
+   * Same command and speed as books. Vertical (and Text view): glide down at the speed until the end.
+   * Paged: glide down the page, then turn after a short pause. Holds while touching, selecting, or with a
+   * panel or popover open; Space pauses, Esc stops.
+   */
+  toggleAutoScroll() {
+    if (this.autoRaf) return this.stopAutoScroll()
+    if (!this.doc) return
+    this.autoAcc = 0; this.autoLast = 0; this.autoBottomAt = null; this.autoPaused = false
+    this.autoRaf = window.requestAnimationFrame(t => this.autoStep(t))
+    new Notice('Auto-scroll on — Space pauses, Esc stops')
+  }
+
+  stopAutoScroll() {
+    if (this.autoRaf) window.cancelAnimationFrame(this.autoRaf)
+    this.autoRaf = 0
+  }
+
+  private autoStep(now: number) {
+    if (!this.autoRaf) return
+    if (!this.doc || !this.containerEl.isShown()) return this.stopAutoScroll()
+    const dt = this.autoLast ? now - this.autoLast : 0
+    this.autoLast = now
+    const held = this.autoPaused || this.pointerHeld || this.hasSel() || this.panel.isOpen || this.popover.visible || this.area.active
+    if (held) { this.autoAcc = 0; this.autoBottomAt = null }
+    else {
+      const text = this.mode === 'text', box = text ? this.textView : this.container
+      const speed = this.plugin.settings.autoScrollSpeed // read every frame: changes apply live
+      const act = autoScrollAction({
+        paged: !text && this.layout.scroll === 'paged', top: box.scrollTop, view: box.clientHeight, height: box.scrollHeight,
+        lastPage: this.page >= this.doc.numPages, waited: this.autoBottomAt === null ? null : now - this.autoBottomAt, speed,
+      })
+      if (act === 'end') { this.stopAutoScroll(); new Notice('Auto-scroll stopped: end of the book'); return }
+      if (act === 'scroll') {
+        this.autoBottomAt = null
+        const s = scrollStep(this.autoAcc, dt, speed)
+        this.autoAcc = s.acc
+        if (s.px) box.scrollTop += s.px
+      } else if (act === 'wait') {
+        if (this.autoBottomAt === null) this.autoBottomAt = now
+      } else {
+        this.autoBottomAt = null; this.autoAcc = 0
+        const before = this.viewer?.currentPageNumber
+        this.turn(1)
+        if (this.viewer?.currentPageNumber === before) { this.stopAutoScroll(); return } // last spread
+      }
+    }
+    this.autoRaf = window.requestAnimationFrame(t => this.autoStep(t))
+  }
+
   /** Copy: join line breaks inside a paragraph, keep the paragraph breaks. */
   private onCopy(e: ClipboardEvent) {
     if (!this.hasSel() || !e.clipboardData) return
@@ -612,6 +739,7 @@ export class PdfView extends FileView {
   }
 
   private async closeDoc() {
+    this.stopAutoScroll()
     if (this.ready) { await this.savePosition(); await this.logSession() }
     this.ready = false
     this.viewer?.cleanup?.()
@@ -1418,6 +1546,8 @@ export class PdfView extends FileView {
   private onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, textarea, select, .octavo-panel')) return
     const mod = e.metaKey || e.ctrlKey
+    if (this.autoRaf && e.key === ' ' && !mod) { e.preventDefault(); this.autoPaused = !this.autoPaused; new Notice(this.autoPaused ? 'Auto-scroll paused — Space resumes' : 'Auto-scroll resumed'); return }
+    if (this.autoRaf && e.key === 'Escape' && !this.area.active) { e.preventDefault(); this.stopAutoScroll(); return }
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); this.turnSide(e.key === 'ArrowRight' ? 'right' : 'left') }
     else if (e.key === 'PageDown' || e.key === 'PageUp') { e.preventDefault(); this.turn(e.key === 'PageDown' ? 1 : -1) }
     else if ((e.key === '=' || e.key === '+') && mod) { e.preventDefault(); this.zoomBy(1.15) }
@@ -1478,6 +1608,7 @@ export class PdfView extends FileView {
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
     if (this.mode === 'pages') m.addItem(i => i.setTitle(this.area.active ? 'Cancel area selection' : 'Select area').setIcon('box-select').onClick(() => this.toggleAreaSelect()))
     m.addItem(i => i.setTitle('Export highlights to note').setIcon('file-output').onClick(() => this.file && void this.plugin.exportHighlights(this.file)))
+    m.addItem(i => i.setTitle(this.autoRaf ? 'Stop auto-scroll' : 'Auto-scroll').setIcon('arrow-down-wide-narrow').onClick(() => this.toggleAutoScroll()))
     m.addItem(i => i.setTitle('Zoom in').setIcon('zoom-in').onClick(() => this.zoomBy(1.2)))
     m.addItem(i => i.setTitle('Zoom out').setIcon('zoom-out').onClick(() => this.zoomBy(1 / 1.2)))
     m.addItem(i => i.setTitle('Fit (reset zoom)').setIcon('maximize-2').onClick(() => this.resetZoom()))

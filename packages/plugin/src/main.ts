@@ -176,7 +176,7 @@ export default class OctavoPlugin extends Plugin {
     this.addCommand({
       id: 'toggle-auto-scroll', name: 'Toggle auto-scroll',
       checkCallback: checking => {
-        const v = this.app.workspace.getActiveViewOfType(EpubView)
+        const v = this.app.workspace.getActiveViewOfType(EpubView) ?? this.app.workspace.getActiveViewOfType(PdfView)
         if (!v) return false
         if (!checking) v.toggleAutoScroll()
         return true

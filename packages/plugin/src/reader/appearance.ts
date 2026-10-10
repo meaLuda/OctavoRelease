@@ -101,6 +101,10 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
       cropToggle.onclick = () => { pl.set({ crop: !pl.get().crop, zoom: 1 }); rerender() }
       seg(row(layout, 'Scroll'), [['vertical', 'Vertical'], ['paged', 'Paged']] as Array<[ResolvedLayout['scroll'], string]>, L.scroll, v => pl.set({ scroll: v }))
       if (L.scroll === 'paged') seg(row(layout, 'Direction'), [['ltr', 'Left to right'], ['rtl', 'Right to left']] as Array<[ResolvedLayout['dir'], string]>, L.dir, v => pl.set({ dir: v }))
+      const lock = row(layout, 'Lock scroll direction')
+      const lockToggle = el('div', `checkbox-container${s.pdfScrollLock ? ' is-enabled' : ''}`, lock)
+      lockToggle.setAttribute('aria-label', 'Keep a drag or trackpad scroll on a zoomed page to one direction')
+      lockToggle.onclick = () => { s.pdfScrollLock = !s.pdfScrollLock; save(); rerender() }
     }
     seg(row(layout, 'Dark mode'), [['invert-except-images', 'Smart invert'], ['sepia', 'Sepia'], ['none', 'Original']], s.pdfDark, v => (s.pdfDark = v))
   }

@@ -69,6 +69,8 @@ export interface OctavoSettings {
   /** labels: last collections/tags sent to the Cloud per cloud book id (so only real changes are synced). */
   cloud: { apiBase: string; email: string; token: string; labels?: Record<string, string> }
   autoScrollSpeed: number
+  /** PDF: a drag or trackpad scroll on a page wider than the view keeps to its first direction. */
+  pdfScrollLock: boolean
   /** Small, dismissible Octavo Cloud hints in the reader (big book, scanned PDF, read-aloud). */
   cloudPrompts: boolean
   /** Hints already shown, as `kind:<book id>` (each shows at most once per book). */
@@ -129,6 +131,7 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   ai: { provider: 'none', apiKey: '', model: '', baseUrl: '', allowFallback: true },
   cloud: { apiBase: 'https://octavo.devformat.tools', email: '', token: '' },
   autoScrollSpeed: 40,
+  pdfScrollLock: true,
   cloudPrompts: true,
   promptsSeen: [],
   copyTemplates: { ...DEFAULT_COPY_TEMPLATES },
