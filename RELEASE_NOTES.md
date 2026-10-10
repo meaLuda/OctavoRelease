@@ -1,4 +1,9 @@
-Octavo Reader 1.1.0 beta 1
+Octavo Reader 1.1.0 beta 2
+
+New in beta 2
+- PDF: on a big screen, two pages sit side by side only when the whole pair fits, so you read left, right, then scroll once. Otherwise one page at a time.
+
+In beta 1
 
 PDF
 - Dark mode keeps photos as photos: text and drawings turn light on dark, photos and colour illustrations keep their colours. Works on scanned books and old, yellowed paper too.
