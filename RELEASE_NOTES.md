@@ -1,4 +1,8 @@
-Octavo Reader 1.1.0 beta 8
+Octavo Reader 1.1.0 beta 9
+
+New in beta 9
+- PDF auto-scroll: the page glides down at your speed; in page-turn mode it reads down the page, pauses, and turns. Space pauses, Esc stops.
+- Scroll lock: a zoomed page moves only in the direction you start (down or across), never diagonally. Appearance, Layout, Lock scroll direction.
 
 New in beta 8
 - PDFs follow your Appearance and theme like books do: Light, Dark or Auto, and themes such as Paper, Calm or True Black tint the page and ink (photos stay photos). Original keeps the PDF as printed. The PDF Dark mode row chooses how pages darken.
