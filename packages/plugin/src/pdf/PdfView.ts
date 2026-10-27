@@ -17,7 +17,7 @@ import { TextPromptModal, TagPromptModal } from '../reader/modals'
 import { filterByTags } from '../reader/tags'
 import { maybeCloudPrompt } from '../reader/cloudPrompt'
 import { showCopyMenu, type CopySource } from '../reader/copy'
-import { ensurePdfjs, openPdfDocument, PDF_ASSETS } from './source'
+import { ensurePdfjs, openPdfDocument, rangeFetch, PDF_ASSETS } from './source'
 import { mergeLines, imageCoverage, imageRects } from './geometry'
 import { recolourScan } from './scanDark'
 import { reflow, figureBands, continues } from './reflow'
@@ -25,6 +25,7 @@ import { AreaSelect, type AreaPick } from './areaSelect'
 import { scrollStep, autoScrollAction, decideAxis, wheelLock, type Axis, type AxisGesture } from './autoScroll'
 import { viewportToPdfRect, pdfRectToViewport, footerPage, pageRef, pageLabel, hasOwnLabel, resolvePageInput, type PdfRect } from './region'
 import { renderRegion } from './regionRender'
+import type { PDFDocumentProxy, PDFPageProxy, PDFViewer, EventBus, PageViewport, TextItem, TextMarkedContent, PdfjsLibModule, PdfjsViewerModule } from './pdfjs'
 import {
   resolveLayout, pruneLayouts, turnFor, clampZoom, effectiveFit, useSpread, inkBox, cropBox, isBleed, sameSize, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, joinCopiedLines,
   type Box, type ResolvedLayout,
@@ -37,17 +38,31 @@ export const PDF_VIEW = 'octavo-pdf'
  * Obsidian use): rendering queue, page buffer and canvas limits come from
  * pdf.js. Octavo adds highlights, PDF++ links, dark mode and the reading UI.
  */
-const vp1h = (page: any) => page.getViewport({ scale: 1 }).height
+const vp1h = (page: PDFPageProxy) => page.getViewport({ scale: 1 }).height
+/** Fire-and-forget an async handler where a void callback is expected. */
+const detach = <A extends unknown[]>(f: (...a: A) => Promise<unknown>) => (...a: A): void => { void f(...a) }
+const isText = (it: TextItem | TextMarkedContent): it is TextItem => 'str' in it
+
+/** The parts of pdf.js's PDFPageView the reader uses (the text layer's TextLayer is private in the typings). */
+interface PageView {
+  div: HTMLDivElement
+  canvas?: HTMLCanvasElement | null
+  scale: number
+  viewport: PageViewport
+  textLayer?: { textLayer?: { textDivs?: HTMLElement[]; textContentItemsStr?: string[]; textContentItems?: (TextItem | TextMarkedContent)[] } | null } | null
+}
+type Viewer = Omit<PDFViewer, 'getPageView' | 'setDocument'> & { getPageView(index: number): PageView | undefined; setDocument(doc: PDFDocumentProxy | null): void }
+type OutlineNode = { title: string; dest: string | unknown[] | null; items: OutlineNode[] }
 
 export class PdfView extends FileView {
   allowNoFile = false
-  private pdfjs: any = null
-  private viewerLib: any = null
-  private doc: any = null
-  private eventBus: any = null
-  private viewer: any = null
+  private pdfjs: PdfjsLibModule | null = null
+  private viewerLib: PdfjsViewerModule | null = null
+  private doc: PDFDocumentProxy | null = null
+  private eventBus: EventBus | null = null
+  private viewer: Viewer | null = null
   private root!: HTMLElement
-  private container!: HTMLElement
+  private container!: HTMLDivElement
   private chrome!: ReaderChrome
   private popover!: SelectionPopover
   private panel!: SidePanel
@@ -84,7 +99,7 @@ export class PdfView extends FileView {
   private textCache = new Map<number, { items: string[]; eol: boolean[] }>()
   private textView!: HTMLElement
   private textIO: IntersectionObserver | null = null
-  private rawCache = new Map<number, any[]>()
+  private rawCache = new Map<number, TextItem[]>()
   private tts: PdfReadAloudUi | null = null
   /** The open file is an Octavo Cloud placeholder. */
   private isStub = false
@@ -172,17 +187,18 @@ export class PdfView extends FileView {
         this.doc = await lib.getDocument({ ...PDF_ASSETS, data: new Uint8Array(await cloud.arrayBuffer()), isEvalSupported: false }).promise
       } else {
         const url = this.app.vault.getResourcePath(file)
-        const headRes = await fetch(url, { headers: { Range: `bytes=0-${1024 * 1024 - 1}` } }).catch(() => null)
+        const headRes = await rangeFetch(url, `bytes=0-${1024 * 1024 - 1}`).catch(() => null)
         let head = headRes ? new Uint8Array(await headRes.arrayBuffer()) : null
         if (!head || head.byteLength > 1024 * 1024) head = new Uint8Array(await this.app.vault.readBinary(file)).slice(0, 1024 * 1024)
         this.bookId = await bookIdFromBytes(head, file.stat.size)
         this.doc = await openPdfDocument(lib, url, file.stat.size, async () => new Uint8Array(await this.app.vault.readBinary(file)))
       }
       const meta = await this.doc.getMetadata().catch(() => null)
-      const embedded = String(meta?.info?.Title ?? '').trim()
+      const info: { Title?: string; Author?: unknown } | undefined = meta?.info
+      const embedded = String(info?.Title ?? '').trim()
       this.title = isJunkTitle(embedded) ? cleanBookName(file.name).title : tidyTitle(embedded)
-      const author = normalizeAuthors(meta?.info?.Author) ?? cleanBookName(file.name).author
-      ;(this.leaf as any).updateHeader?.()
+      const author = normalizeAuthors(info?.Author) ?? cleanBookName(file.name).author
+      ;(this.leaf as WorkspaceLeaf & { updateHeader?: () => void }).updateHeader?.()
       this.note = await this.plugin.library.ensureNote(file, { id: this.bookId, title: this.title, author, format: 'pdf' })
       this.labels = await this.doc.getPageLabels().catch(() => null)
       await this.loadOutline()
@@ -209,29 +225,28 @@ export class PdfView extends FileView {
 
   /** (Re)create the pdf.js viewer — also used when dark-mode colours change (pageColors is a constructor option). */
   private buildViewer(startPage: number) {
-    const V = this.viewerLib
+    const V = this.viewerLib!, doc = this.doc!
     this.viewer?.cleanup?.()
     this.viewer?.setDocument?.(null)
-    const inner = this.container.querySelector('.pdfViewer') as HTMLElement
+    const inner = this.container.querySelector('.pdfViewer') as HTMLDivElement
     inner.empty()
-    const s = this.plugin.settings
     this.darkKey = this.pageLook().key
     const eventBus = new V.EventBus()
     const linkService = new V.PDFLinkService({ eventBus, externalLinkTarget: 2 })
     const findController = new V.PDFFindController({ eventBus, linkService })
     // No pdf.js pageColors: it recolours greyscale photos stored as image masks into negatives.
     // Dark mode is applied per page after rendering instead (darkenPage), which keeps photos as photos.
-    const pageColors = null
+    const pageColors = undefined
     const viewer = new V.PDFViewer({
       container: this.container, viewer: inner, eventBus, linkService, findController,
-      textLayerMode: 1, annotationMode: this.pdfjs.AnnotationMode?.ENABLE ?? 1,
+      textLayerMode: 1, annotationMode: this.pdfjs?.AnnotationMode?.ENABLE ?? 1,
       maxCanvasPixels: Platform.isMobile ? 2 ** 23 : 2 ** 25, // stay under WebKit's canvas memory cap on iOS
       pageColors, removePageBorders: false,
-    })
+    }) as Viewer
     linkService.setViewer(viewer)
     this.eventBus = eventBus
     this.viewer = viewer
-    const start = Math.min(this.doc.numPages, Math.max(1, startPage))
+    const start = Math.min(doc.numPages, Math.max(1, startPage))
     // crop box: remembered, or measured (low-res renders) once the first page is on screen, so opening never waits
     this.measuring = this.layout.crop && !this.crop
     let asked = false
@@ -245,10 +260,10 @@ export class PdfView extends FileView {
         this.saveLayout()
       })
     })
-    eventBus.on('pagesinit', async () => {
+    eventBus.on('pagesinit', () => {
       viewer.currentPageNumber = start
       this.fit()
-      if (this.pendingSubpath) { const sp = this.pendingSubpath; this.pendingSubpath = null; await this.navigateSubpath(sp) }
+      if (this.pendingSubpath) { const sp = this.pendingSubpath; this.pendingSubpath = null; void this.navigateSubpath(sp) }
     })
     eventBus.on('pagechanging', ({ pageNumber }: { pageNumber: number }) => {
       this.page = pageNumber
@@ -260,8 +275,8 @@ export class PdfView extends FileView {
     })
     eventBus.on('textlayerrendered', ({ pageNumber }: { pageNumber: number }) => this.onTextLayer(pageNumber))
     eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => { void this.markScanned(pageNumber).then(() => this.darkenPage(pageNumber)); void this.checkCrop(pageNumber) })
-    viewer.setDocument(this.doc)
-    linkService.setDocument(this.doc, null)
+    viewer.setDocument(doc)
+    linkService.setDocument(doc, null)
   }
 
   /**
@@ -334,7 +349,7 @@ export class PdfView extends FileView {
    * read down the left page and back up for the right), and like pdf.js "auto" it never exceeds 125%
    * (more when margins are trimmed, since the trimmed box is what you read).
    */
-  private spreadFit(pv: any, trim: Box | null): number {
+  private spreadFit(pv: PageView, trim: Box | null): number {
     const unitH = pv.viewport.height / pv.scale, unitW = pv.viewport.width / pv.scale
     const fw = trim ? trim.x1 - trim.x0 : 1, fh = trim ? trim.y1 - trim.y0 : 1
     const availW = this.container.clientWidth - 48, availH = this.container.clientHeight - 88 - 16
@@ -363,10 +378,10 @@ export class PdfView extends FileView {
   /** Ink box of page n from a ~160px-wide render (cached per book). */
   private async pageBox(n: number): Promise<Box | null> {
     if (this.boxCache.has(n)) return this.boxCache.get(n)!
-    const doc = this.doc
+    const doc = this.doc!
     const page = await doc.getPage(n)
     const vp = page.getViewport({ scale: 160 / page.getViewport({ scale: 1 }).width })
-    const c = document.createElement('canvas')
+    const c = createEl('canvas')
     c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height)
     const ctx = c.getContext('2d', { willReadFrequently: true })!
     await page.render({ canvasContext: ctx, viewport: vp }).promise
@@ -393,7 +408,7 @@ export class PdfView extends FileView {
   /** One crop box for the book: pages near `start` plus a sample across the whole book, so a heading or page
    *  number that sits higher or lower on some pages is never cut off. */
   private async findCrop(start: number): Promise<Box | null> {
-    const n = this.doc.numPages
+    const n = this.doc!.numPages
     const pick = [start, start + 1, start + 2, ...[0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92].map(f => Math.round(n * f))]
     const pages = [...new Set(pick.filter(p => p >= 2 && p <= n))]
     return cropBox(await Promise.all(pages.map(p => this.pageBox(p).catch(() => null))), 0.025)
@@ -440,30 +455,29 @@ export class PdfView extends FileView {
 
   /** Set an absolute scale with a focal point. The target is tracked separately because pdf.js rounds to 0.01. */
   private scaleTo(want: number, x?: number, y?: number) {
-    const v = this.viewer
+    const v = this.viewer!
     this.wantScale = want
     const cr = this.container.getBoundingClientRect()
     const origin = [x ?? cr.left + cr.width / 2, y ?? cr.top + cr.height / 2]
     const k = want / v.currentScale
     if (Math.abs(k - 1) > 0.004) {
       // the page point under the origin, so it can be put back exactly (centred pages shift as they grow)
-      const pageEl = this.containerEl.doc.elementFromPoint(origin[0]!, origin[1]!)?.closest('.page') as HTMLElement | null
+      const pageEl = this.containerEl.doc.elementFromPoint(origin[0], origin[1])?.closest('.page') as HTMLElement | null
       const r0 = pageEl?.getBoundingClientRect()
-      const rel = r0 && r0.width ? [(origin[0]! - r0.left) / r0.width, (origin[1]! - r0.top) / r0.height] : null
+      const rel = r0 && r0.width ? [(origin[0] - r0.left) / r0.width, (origin[1] - r0.top) / r0.height] : null
       if (v.updateScale) {
         v.updateScale({ scaleFactor: k, origin, drawingDelay: 400 })
         const r1 = rel && pageEl!.isConnected ? pageEl!.getBoundingClientRect() : null
-        if (r1) { this.container.scrollLeft += r1.left + rel![0]! * r1.width - origin[0]!; this.container.scrollTop += r1.top + rel![1]! * r1.height - origin[1]! }
+        if (r1) { this.container.scrollLeft += r1.left + rel![0] * r1.width - origin[0]; this.container.scrollTop += r1.top + rel![1] * r1.height - origin[1] }
       }
       else { // older pdf.js: set the scale, then restore the focal point ourselves
         const st = this.container.scrollTop, sl = this.container.scrollLeft
         v.currentScale = want
-        const f = focalScroll(sl, st, origin[0]! - cr.left, origin[1]! - cr.top, k)
+        const f = focalScroll(sl, st, origin[0] - cr.left, origin[1] - cr.top, k)
         this.container.scrollLeft = f.left; this.container.scrollTop = f.top
       }
     }
     const zoom = clampZoom(want / this.fitBase)
-    const wasFit = this.layout.zoom === 1
     this.layout.zoom = Math.abs(zoom - 1) < 0.02 ? 1 : zoom
     
     this.updateFitClass()
@@ -511,7 +525,7 @@ export class PdfView extends FileView {
     if (this.mode === 'text') { this.goToPage(this.page + step); return }
     if (!v?.pagesCount || !(step > 0 ? v.nextPage() : v.previousPage())) return
     if (this.layout.scroll !== 'paged') return
-    const inner = this.container.querySelector('.pdfViewer') as HTMLElement | null
+    const inner = this.container.querySelector<HTMLElement>('.pdfViewer')
     if (!inner) return
     // LTR: next arrives from the right; RTL mirrors it
     const fromRight = (step > 0) !== (this.layout.dir === 'rtl')
@@ -542,11 +556,11 @@ export class PdfView extends FileView {
     let pinch: { d0: number; s0: number; mx: number; my: number } | null = null
     let swipe: { x: number; y: number; t: number; sl: number } | null = null
     let raf = 0
-    const mid = (t: TouchList) => ({ x: (t[0]!.clientX + t[1]!.clientX) / 2, y: (t[0]!.clientY + t[1]!.clientY) / 2, d: Math.hypot(t[0]!.clientX - t[1]!.clientX, t[0]!.clientY - t[1]!.clientY) })
+    const mid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2, d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) })
     this.container.addEventListener('touchstart', e => {
       if (this.mode !== 'pages' || !this.viewer?.pagesCount) return
       if (e.touches.length === 2) { const m = mid(e.touches); pinch = { d0: Math.max(10, m.d), s0: this.viewer.currentScale, mx: m.x, my: m.y }; swipe = null }
-      else if (e.touches.length === 1) swipe = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, t: Date.now(), sl: this.container.scrollLeft }
+      else if (e.touches.length === 1) swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), sl: this.container.scrollLeft }
     }, { passive: true })
     this.container.addEventListener('touchmove', e => {
       if (!pinch || e.touches.length !== 2) return
@@ -561,7 +575,7 @@ export class PdfView extends FileView {
     const end = (e: TouchEvent) => {
       if (pinch && e.touches.length < 2) { pinch = null; this.wantScale = 0; this.noTapUntil = Date.now() + 450; return }
       if (!swipe || e.touches.length || this.layout.scroll !== 'paged' || this.layout.zoom !== 1) { swipe = null; return }
-      const t = e.changedTouches[0]!, dx = t.clientX - swipe.x, dy = t.clientY - swipe.y
+      const t = e.changedTouches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y
       if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - swipe.t < 700 && Math.abs(this.container.scrollLeft - swipe.sl) < 3) {
         this.turn(turnFor(dx < 0 ? 'right' : 'left', this.layout.dir))
         this.noTapUntil = Date.now() + 400
@@ -612,13 +626,13 @@ export class PdfView extends FileView {
       window.clearTimeout(idle); release()
       touching = true
       if (e.touches.length !== 1 || this.hasSel() || !this.lockOn()) return
-      const t = e.touches[0]!
+      const t = e.touches[0]
       start = { x: t.clientX, y: t.clientY, left: c.scrollLeft, top: c.scrollTop }
     }, { passive: true })
     c.addEventListener('touchmove', e => {
       if (e.touches.length !== 1) { release(); return } // a pinch zooms and pans freely
       if (!start || pin) return
-      const t = e.touches[0]!, axis = decideAxis(t.clientX - start.x, t.clientY - start.y)
+      const t = e.touches[0], axis = decideAxis(t.clientX - start.x, t.clientY - start.y)
       if (axis) pin = { axis, left: start.left, top: start.top }
     }, { passive: true })
     const end = (e: TouchEvent) => { if (e.touches.length) return; touching = false; if (pin) settle(); else start = null }
@@ -652,7 +666,7 @@ export class PdfView extends FileView {
     if (!this.doc) return
     this.autoAcc = 0; this.autoLast = 0; this.autoBottomAt = null; this.autoPaused = false
     this.autoRaf = window.requestAnimationFrame(t => this.autoStep(t))
-    new Notice('Auto-scroll on — Space pauses, Esc stops')
+    new Notice('Auto-scroll on. Space pauses, escape stops.')
   }
 
   stopAutoScroll() {
@@ -706,7 +720,7 @@ export class PdfView extends FileView {
     bar.addEventListener('click', e => e.stopPropagation())
     bar.addEventListener('pointerdown', e => e.stopPropagation())
     const wrap = el('div', 'octavo-pdf-scrub-track', bar)
-    this.scrub = el('input', 'octavo-pdf-scrub-input', wrap) as HTMLInputElement
+    this.scrub = el('input', 'octavo-pdf-scrub-input', wrap)
     this.scrub.type = 'range'; this.scrub.min = '1'; this.scrub.step = '1'
     this.scrub.setAttribute('aria-label', 'Go to page')
     this.scrubBubble = el('div', 'octavo-pdf-scrub-bubble', wrap)
@@ -763,12 +777,12 @@ export class PdfView extends FileView {
     this.chrome?.destroy()
   }
 
-  async setEphemeralState(state: any) {
+  setEphemeralState(state: unknown) {
     super.setEphemeralState?.(state)
-    const sub = state?.subpath
+    const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
     if (!this.ready || !this.viewer?.pagesCount) { this.pendingSubpath = sub; return }
-    await this.navigateSubpath(sub)
+    void this.navigateSubpath(sub)
   }
 
   private async navigateSubpath(sub: string) {
@@ -785,16 +799,16 @@ export class PdfView extends FileView {
   goToPage(n: number) {
     if (this.mode === 'text') { this.page = Math.min(this.doc?.numPages ?? n, Math.max(1, n)); this.scrollTextTo(this.page); this.updateFooter(); return }
     if (!this.viewer?.pagesCount) return
-    this.viewer.currentPageNumber = Math.min(this.doc.numPages, Math.max(1, n))
+    this.viewer.currentPageNumber = Math.min(this.doc!.numPages, Math.max(1, n))
   }
 
-  private pageView(n: number): any { return this.viewer?.getPageView?.(n - 1) }
+  private pageView(n: number): PageView | undefined { return this.viewer?.getPageView?.(n - 1) }
 
   /** Run `fn` once page n's text layer exists (immediately if it already does). */
   private whenTextLayer(n: number, fn: () => void) {
     if (this.pageView(n)?.textLayer?.textLayer?.textDivs?.length) return fn()
-    const handler = ({ pageNumber }: { pageNumber: number }) => { if (pageNumber === n) { this.eventBus.off('textlayerrendered', handler); window.setTimeout(fn, 30) } }
-    this.eventBus.on('textlayerrendered', handler)
+    const handler = ({ pageNumber }: { pageNumber: number }) => { if (pageNumber === n) { this.eventBus!.off('textlayerrendered', handler); window.setTimeout(fn, 30) } }
+    this.eventBus!.on('textlayerrendered', handler)
   }
 
   // ───────────────────────── text layer, highlights ─────────────────────────
@@ -802,11 +816,11 @@ export class PdfView extends FileView {
   /** Tag spans with their PDF++ index and draw this page's highlights. */
   private onTextLayer(n: number) {
     const tl = this.pageView(n)?.textLayer?.textLayer
-    const divs: HTMLElement[] | undefined = tl?.textDivs
+    const divs = tl?.textDivs
     divs?.forEach((d, i) => (d.dataset.idx = String(i)))
-    const strs: string[] | undefined = tl?.textContentItemsStr
-    const items: any[] | undefined = tl?.textContentItems
-    if (strs) this.textCache.set(n, { items: [...strs], eol: strs.map((_, i) => !!items?.filter((x: any) => 'str' in x)[i]?.hasEOL) })
+    const strs = tl?.textContentItemsStr
+    const items = tl?.textContentItems
+    if (strs) this.textCache.set(n, { items: [...strs], eol: strs.map((_, i) => !!items?.filter(isText)[i]?.hasEOL) })
     this.drawHighlights(n)
     this.tts?.onTextLayer(n)
   }
@@ -814,9 +828,9 @@ export class PdfView extends FileView {
   private async pageItems(n: number): Promise<{ items: string[]; eol: boolean[] }> {
     const cached = this.textCache.get(n)
     if (cached) return cached
-    const page = await this.doc.getPage(n)
-    const textItems = (await page.getTextContent()).items.filter((it: any) => 'str' in it)
-    const v = { items: textItems.map((it: any) => it.str as string), eol: textItems.map((it: any) => !!it.hasEOL) }
+    const page = await this.doc!.getPage(n)
+    const textItems = (await page.getTextContent()).items.filter(isText)
+    const v = { items: textItems.map(it => it.str), eol: textItems.map(it => !!it.hasEOL) }
     this.textCache.set(n, v)
     return v
   }
@@ -837,12 +851,13 @@ export class PdfView extends FileView {
     if (!pv?.div) return
     let scanned = this.scannedCache.get(n)
     if (scanned === undefined) {
-      const page = await this.doc.getPage(n)
+      const page = await this.doc!.getPage(n)
       const ops = await page.getOperatorList()
       const vp = page.getViewport({ scale: 1 })
-      scanned = imageCoverage(ops.fnArray, ops.argsArray, this.pdfjs.OPS, vp.width, vp.height) >= 0.6
+      const OPS = this.pdfjs!.OPS
+      scanned = imageCoverage(ops.fnArray, ops.argsArray, OPS, vp.width, vp.height) >= 0.6
       this.scannedCache.set(n, scanned)
-      this.imageRectsCache.set(n, imageRects(ops.fnArray, ops.argsArray, this.pdfjs.OPS))
+      this.imageRectsCache.set(n, imageRects(ops.fnArray, ops.argsArray, OPS))
     }
     pv.div.toggleClass('is-scanned', scanned)
     if (scanned && this.file) void maybeCloudPrompt(this.plugin, this.root, 'scan', this.file, this.bookId, { isStub: this.isStub })
@@ -870,9 +885,9 @@ export class PdfView extends FileView {
   /** Recolour a rendered page with the page look: paper and ink take the theme's colours, photos stay photos. */
   private darkenPage(n: number) {
     const pv = this.pageView(n)
-    const canvas = pv?.canvas as HTMLCanvasElement | undefined
+    const canvas = pv?.canvas
     const colors = this.pageLook().colors
-    if (!canvas?.width || !colors || canvas.hasClass('octavo-recoloured')) return
+    if (!pv || !canvas?.width || !colors || canvas.hasClass('octavo-recoloured')) return
     try {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return
@@ -883,8 +898,8 @@ export class PdfView extends FileView {
       const images = scanned ? undefined : (this.imageRectsCache.get(n) ?? []).map(r => {
         const [a, b, c, d] = pv.viewport.convertToViewportRectangle(r) as number[]
         return {
-          x0: Math.max(0, Math.floor(Math.min(a!, c!) * k)), y0: Math.max(0, Math.floor(Math.min(b!, d!) * k)),
-          x1: Math.min(canvas.width, Math.ceil(Math.max(a!, c!) * k)), y1: Math.min(canvas.height, Math.ceil(Math.max(b!, d!) * k)),
+          x0: Math.max(0, Math.floor(Math.min(a, c) * k)), y0: Math.max(0, Math.floor(Math.min(b, d) * k)),
+          x1: Math.min(canvas.width, Math.ceil(Math.max(a, c) * k)), y1: Math.min(canvas.height, Math.ceil(Math.max(b, d) * k)),
         }
       }).filter(b => b.x1 - b.x0 > 8 && b.y1 - b.y0 > 8)
       recolourScan(img.data, canvas.width, canvas.height, { ...colors, scanned, images })
@@ -908,7 +923,7 @@ export class PdfView extends FileView {
       tags: () => void this.createHighlight(this.plugin.settings.defaultColor, 'highlight', false, true),
       copyLink: () => void this.copySelectionLink(),
       copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(), () => this.popover.hide()),
-      define: () => this.plugin.define(range.toString(), range.toString()),
+      define: () => void this.plugin.define(range.toString(), range.toString()),
       ask: () => void this.askAbout(range.toString()),
       summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { const got = this.selectionToPdf(); this.popover.hide(); if (got) { this.containerEl.doc.getSelection()?.removeAllRanges(); void this.readAloud().play(got.sel.page, got.sel.beginIndex, got.sel.beginOffset) } else Speaker.say(range.toString(), this.plugin.settings.tts) },
@@ -955,7 +970,7 @@ export class PdfView extends FileView {
 
   private async askAbout(text: string) {
     const ctx = this.pageString(await this.pageItems(this.page)).text.slice(0, 3000)
-    this.plugin.ask(text, ctx, this.title, this.fraction())
+    void this.plugin.ask(text, ctx, this.title, this.fraction())
   }
 
   private pageOf(node: Node): number | null {
@@ -999,7 +1014,7 @@ export class PdfView extends FileView {
 
   private chapterOf(page: number): { title: string; start: number; end: number } | null {
     const flat = this.outline.filter(o => o.depth === 0)
-    for (let i = flat.length - 1; i >= 0; i--) if (flat[i]!.page <= page) return { title: flat[i]!.title, start: flat[i]!.page, end: (flat[i + 1]?.page ?? (this.doc?.numPages ?? page) + 1) - 1 }
+    for (let i = flat.length - 1; i >= 0; i--) if (flat[i].page <= page) return { title: flat[i].title, start: flat[i].page, end: (flat[i + 1]?.page ?? (this.doc?.numPages ?? page) + 1) - 1 }
     return null
   }
 
@@ -1075,7 +1090,7 @@ export class PdfView extends FileView {
   private hlLayer(n: number): HTMLElement | null {
     const pv = this.pageView(n)
     if (!pv?.div) return null
-    let layer = pv.div.querySelector(':scope > .octavo-pdf-hl') as HTMLElement | null
+    let layer = pv.div.querySelector<HTMLElement>(':scope > .octavo-pdf-hl')
     if (!layer) layer = el('div', 'octavo-pdf-hl', pv.div)
     return layer
   }
@@ -1111,9 +1126,9 @@ export class PdfView extends FileView {
     const { text, starts } = this.pageString(p)
     const m = findQuote(text, h.anchor.quote)
     if (!m) return null
-    const itemAt = (off: number) => { let i = 0; while (i + 1 < starts.length && starts[i + 1]! <= off) i++; return i }
+    const itemAt = (off: number) => { let i = 0; while (i + 1 < starts.length && starts[i + 1] <= off) i++; return i }
     const bi = itemAt(m.start), ei = itemAt(Math.max(m.start, m.end - 1))
-    const sel = { page: n, beginIndex: bi, beginOffset: m.start - starts[bi]!, endIndex: ei, endOffset: Math.min((p.items[ei] ?? '').length, m.end - starts[ei]!) }
+    const sel = { page: n, beginIndex: bi, beginOffset: m.start - starts[bi], endIndex: ei, endOffset: Math.min((p.items[ei] ?? '').length, m.end - starts[ei]) }
     if (!h.id) return sel
     const up: Highlight = { ...h, anchor: { ...h.anchor, pdf: sel } }
     this.highlights.set(h.id, { ...h, anchor: up.anchor })
@@ -1130,14 +1145,14 @@ export class PdfView extends FileView {
     this.popover.show(rect, {
       color: c => void this.updateHighlight(h, { color: c, style: 'highlight' }),
       underline: () => void this.updateHighlight(h, { style: h.style === 'underline' ? 'highlight' : 'underline' }),
-      note: async () => { const n = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Note').result(); if (n !== null) await this.updateHighlight(h, { note: n || undefined }) },
-      tags: async () => { this.popover.hide(); const t = await new TagPromptModal(this.app, h.tags ?? []).result(); if (t !== null) await this.updateHighlight(h, { tags: t.length ? t : undefined }) },
-      copyLink: async () => { await navigator.clipboard.writeText(this.plugin.library.linkFor(this.file!, this.note!, h)); new Notice('Link copied'); this.popover.hide() },
+      note: detach(async () => { const n = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Note').result(); if (n !== null) await this.updateHighlight(h, { note: n || undefined }) }),
+      tags: detach(async () => { this.popover.hide(); const t = await new TagPromptModal(this.app, h.tags ?? []).result(); if (t !== null) await this.updateHighlight(h, { tags: t.length ? t : undefined }) }),
+      copyLink: detach(async () => { await navigator.clipboard.writeText(this.plugin.library.linkFor(this.file!, this.note!, h)); new Notice('Link copied'); this.popover.hide() }),
       copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(h), () => this.popover.hide()),
-      define: () => this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
+      define: () => void this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
       ask: () => void this.askAbout(h.anchor.quote.exact),
       speak: () => { this.popover.hide(); Speaker.say(h.anchor.quote.exact, this.plugin.settings.tts) },
-      remove: async () => { this.popover.hide(); this.highlights.delete(h.id); this.redrawAll(); if (this.note) await this.plugin.library.deleteHighlight(this.note, h.id) },
+      remove: detach(async () => { this.popover.hide(); this.highlights.delete(h.id); this.redrawAll(); if (this.note) await this.plugin.library.deleteHighlight(this.note, h.id) }),
       openInNote: () => { this.popover.hide(); if (this.note) void this.app.workspace.openLinkText(`${this.note.path}#^oct-${h.id}`, '', 'split') },
     }, { color: h.color, underline: h.style === 'underline' })
   }
@@ -1158,7 +1173,7 @@ export class PdfView extends FileView {
     if (this.area.active) { this.area.cancel(); return }
     if (this.mode !== 'pages') { new Notice('Switch to page view to select an area'); return }
     this.area.start()
-    new Notice('Drag over the page to select an area (Esc cancels)', 3000)
+    new Notice('Drag over the page to select an area. Press escape to cancel.', 3000)
   }
 
   get areaSelecting() { return this.area?.active ?? false }
@@ -1197,7 +1212,7 @@ export class PdfView extends FileView {
 
   /** The region at 2× (2 px per PDF point), as printed (no dark-mode colours). */
   private async regionPng(n: number, rect: PdfRect): Promise<Blob> {
-    const page = await this.doc.getPage(n)
+    const page = await this.doc!.getPage(n)
     const canvas = await renderRegion(page, rect, Math.max(1, rect[2] - rect[0]), { dpr: 2, doc: this.containerEl.doc })
     const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/png'))
     canvas.width = canvas.height = 0
@@ -1254,8 +1269,8 @@ export class PdfView extends FileView {
       d.setCssStyles({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` })
       window.setTimeout(() => d.remove(), 2200)
     }
-    const pv = this.pageView(sel.page)
-    this.container.scrollTo({ top: pv.div.offsetTop + rects[0]!.top - this.container.clientHeight / 3, behavior: 'smooth' })
+    const pv = this.pageView(sel.page)!
+    this.container.scrollTo({ top: pv.div.offsetTop + rects[0].top - this.container.clientHeight / 3, behavior: 'smooth' })
   }
 
   private refreshBacklinks() {
@@ -1272,7 +1287,8 @@ export class PdfView extends FileView {
     this.root.toggleClass('octavo-dark', look.dark)
     this.root.toggleClass('octavo-footer-off', s.footer === 'off')
     this.root.dataset.pdfDark = s.pdfDark
-    if (this.viewer && this.darkKey !== look.key) this.buildViewer(this.page)
+    // New page colours: redraw the pages where they are. Rebuilding the viewer lost the place on the page.
+    if (this.viewer && this.darkKey !== look.key) { this.darkKey = look.key; this.viewer.refresh() }
     this.styleTextView()
     this.setMode(s.pdfMode)
     this.updateFooter()
@@ -1298,6 +1314,7 @@ export class PdfView extends FileView {
     const look = resolveLook(this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'))
     const t = look.typo
     const obsidianFont = getComputedStyle(this.containerEl.doc.body).getPropertyValue('--font-text').trim()
+    const keep = this.mode === 'text' ? this.textPlace() : null
     const st = this.textView.style
     st.setProperty('--tv-bg', look.colors.bg)
     st.setProperty('--tv-fg', look.colors.fg)
@@ -1307,6 +1324,20 @@ export class PdfView extends FileView {
     st.setProperty('--tv-measure', `${Math.max(28, 40 - t.margin / 8)}em`)
     st.setProperty('--tv-align', t.justify ? 'justify' : 'start')
     st.setProperty('--tv-hyphens', t.hyphenate ? 'auto' : 'manual')
+    // A new font or size reflows the text: keep the same spot of the same page at the top, again once fonts load.
+    if (keep) { this.restoreTextPlace(keep); void this.containerEl.doc.fonts.ready.then(() => this.restoreTextPlace(keep)) }
+  }
+
+  private textPlace(): { sec: HTMLElement; f: number } | null {
+    const top = this.textView.scrollTop
+    for (const sec of Array.from(this.textView.querySelectorAll<HTMLElement>('.octavo-reflow-page'))) {
+      if (sec.offsetTop + sec.offsetHeight > top) return { sec, f: sec.offsetHeight ? Math.max(0, top - sec.offsetTop) / sec.offsetHeight : 0 }
+    }
+    return null
+  }
+
+  private restoreTextPlace({ sec, f }: { sec: HTMLElement; f: number }) {
+    if (sec.isConnected) this.textView.scrollTop = sec.offsetTop + f * sec.offsetHeight
   }
 
   private buildTextView() {
@@ -1316,7 +1347,7 @@ export class PdfView extends FileView {
     this.textIO = new IntersectionObserver(entries => {
       for (const e of entries) if (e.isIntersecting) { this.textIO?.unobserve(e.target); void this.fillTextPage(e.target as HTMLElement) }
     }, { root: this.textView, rootMargin: '200% 0px' })
-    for (let n = 1; n <= this.doc.numPages; n++) {
+    for (let n = 1; n <= this.doc!.numPages; n++) {
       const sec = el('section', 'octavo-reflow-page', article)
       sec.dataset.page = String(n)
       sec.addClass('octavo-reflow-pending')
@@ -1326,10 +1357,10 @@ export class PdfView extends FileView {
 
   private async fillTextPage(sec: HTMLElement) {
     const n = Number(sec.dataset.page)
-    const page = await this.doc.getPage(n)
-    let raw: any[] = this.rawCache.get(n) ?? []
+    const page = await this.doc!.getPage(n)
+    let raw: TextItem[] = this.rawCache.get(n) ?? []
     if (!this.rawCache.has(n)) {
-      raw = (await page.getTextContent()).items.filter((it: any) => 'str' in it)
+      raw = (await page.getTextContent()).items.filter(isText)
       this.rawCache.set(n, raw)
     }
     const blocks = reflow(raw)
@@ -1355,10 +1386,10 @@ export class PdfView extends FileView {
   }
 
   /** Render the page once and crop each band that actually contains ink (drawings, photos). */
-  private async cropFigures(page: any, bands: Array<{ top: number; bottom: number }>): Promise<Array<{ top: number; img: HTMLImageElement }>> {
+  private async cropFigures(page: PDFPageProxy, bands: Array<{ top: number; bottom: number }>): Promise<Array<{ top: number; img: HTMLImageElement }>> {
     const scale = Math.min(2, 1400 / page.getViewport({ scale: 1 }).width) * Math.min(window.devicePixelRatio || 1, 2) / 1.5
     const vp = page.getViewport({ scale })
-    const canvas = document.createElement('canvas')
+    const canvas = createEl('canvas')
     canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height)
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!
     await page.render({ canvasContext: ctx, viewport: vp }).promise
@@ -1371,7 +1402,7 @@ export class PdfView extends FileView {
       let minX = canvas.width, maxX = 0, minY = y1 - y0, maxY = 0, ink = 0, mid = 0
       for (let y = 0; y < y1 - y0; y += 2) for (let x = 0; x < canvas.width; x += 2) {
         const i = (y * canvas.width + x) * 4
-        const sum = data[i]! + data[i + 1]! + data[i + 2]!
+        const sum = data[i] + data[i + 1] + data[i + 2]
         if (sum < 600) { ink++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y }
         if (sum > 150 && sum < 600) mid++
       }
@@ -1379,7 +1410,7 @@ export class PdfView extends FileView {
       const pad = 8
       const cx = Math.max(0, minX - pad), cy = y0 + Math.max(0, minY - pad)
       const cw = Math.min(canvas.width - cx, maxX - minX + pad * 2), ch = Math.min(canvas.height - cy, maxY - minY + pad * 2)
-      const c2 = document.createElement('canvas'); c2.width = cw; c2.height = ch
+      const c2 = createEl('canvas'); c2.width = cw; c2.height = ch
       c2.getContext('2d')!.drawImage(canvas, cx, cy, cw, ch, 0, 0, cw, ch)
       const img = new Image()
       img.src = c2.toDataURL('image/webp', 0.85)
@@ -1409,7 +1440,7 @@ export class PdfView extends FileView {
   }
 
   private scrollTextTo(n: number) {
-    const sec = this.textView.querySelector(`[data-page="${n}"]`) as HTMLElement | null
+    const sec = this.textView.querySelector<HTMLElement>(`[data-page="${n}"]`)
     if (sec) this.textView.scrollTop = sec.offsetTop - 40
   }
 
@@ -1480,13 +1511,14 @@ export class PdfView extends FileView {
 
   private async loadOutline() {
     this.outline = []
-    const raw = await this.doc.getOutline().catch(() => null)
-    const walk = async (items: any[], depth: number) => {
+    const doc = this.doc!
+    const raw = await doc.getOutline().catch(() => null)
+    const walk = async (items: OutlineNode[], depth: number) => {
       for (const it of items ?? []) {
         let page = 0
         try {
-          const dest = typeof it.dest === 'string' ? await this.doc.getDestination(it.dest) : it.dest
-          if (dest?.[0]) page = (await this.doc.getPageIndex(dest[0])) + 1
+          const dest: unknown[] | null = typeof it.dest === 'string' ? await doc.getDestination(it.dest) : it.dest
+          if (dest?.[0]) page = (await doc.getPageIndex(dest[0] as Parameters<PDFDocumentProxy['getPageIndex']>[0])) + 1
         } catch { /* unresolved */ }
         if (page) this.outline.push({ title: String(it.title ?? '').trim(), page, depth })
         if (it.items?.length && depth < 3) await walk(it.items, depth + 1)
@@ -1497,9 +1529,9 @@ export class PdfView extends FileView {
 
   private async saveCover() {
     try {
-      const page = await this.doc.getPage(1)
+      const page = await this.doc!.getPage(1)
       const v = page.getViewport({ scale: 360 / page.getViewport({ scale: 1 }).width })
-      const c = document.createElement('canvas'); c.width = v.width; c.height = v.height
+      const c = createEl('canvas'); c.width = v.width; c.height = v.height
       await page.render({ canvasContext: c.getContext('2d')!, viewport: v }).promise
       const blob = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', 0.82))
       const path = await this.plugin.library.saveCover(this.bookId, blob)
@@ -1563,8 +1595,8 @@ export class PdfView extends FileView {
   private async toggleBookmark() {
     if (!this.note) return
     let next: number[] = []
-    await this.app.fileManager.processFrontMatter(this.note, fm => {
-      const cur: number[] = Array.isArray(fm.bookmarks) ? fm.bookmarks.filter((x: unknown) => typeof x === 'number') : []
+    await this.app.fileManager.processFrontMatter(this.note, (fm: { bookmarks?: unknown }) => {
+      const cur: number[] = Array.isArray(fm.bookmarks) ? fm.bookmarks.filter((x): x is number => typeof x === 'number') : []
       next = cur.includes(this.page) ? cur.filter(p => p !== this.page) : [...cur, this.page].sort((a, b) => a - b)
       if (next.length) fm.bookmarks = next; else delete fm.bookmarks
     })
@@ -1589,8 +1621,8 @@ export class PdfView extends FileView {
         if (!this.doc) return null
         const page = await this.doc.getPage(n)
         let raw = this.rawCache.get(n)
-        if (!raw) { raw = (await page.getTextContent()).items.filter((it: any) => 'str' in it); this.rawCache.set(n, raw!) }
-        return { items: raw!, height: vp1h(page) }
+        if (!raw) { raw = (await page.getTextContent()).items.filter(isText); this.rawCache.set(n, raw) }
+        return { items: raw, height: vp1h(page) }
       },
       spans: n => this.pageView(n)?.textLayer?.textLayer?.textDivs,
       goToPage: n => this.goToPage(n),
@@ -1665,7 +1697,7 @@ export class PdfView extends FileView {
   }
 
   private renderSearch(body: HTMLElement) {
-    const input = el('input', 'octavo-search-input', body) as HTMLInputElement
+    const input = el('input', 'octavo-search-input', body)
     input.type = 'search'; input.placeholder = 'Search this PDF'
     const status = el('div', 'octavo-search-status', body)
     const list = el('div', 'octavo-search-results', body)
@@ -1675,7 +1707,7 @@ export class PdfView extends FileView {
       list.empty()
       if (!q) return
       let n = 0
-      for (let p = 1; p <= this.doc.numPages && my === token; p++) {
+      for (let p = 1; p <= this.doc!.numPages && my === token; p++) {
         const { text } = this.pageString(await this.pageItems(p))
         const low = text.toLowerCase()
         for (let i = low.indexOf(q); i >= 0 && n < 500; i = low.indexOf(q, i + q.length)) {
@@ -1691,7 +1723,7 @@ export class PdfView extends FileView {
             this.whenTextLayer(p, () => { const sel = this.anchorQuote(p, { id: '', color: 'yellow', style: 'highlight', created: '', lines: [0, 0], anchor: { quote } }); if (sel) this.flashSelection(sel) })
           }
         }
-        if (p % 10 === 0) status.setText(`Searching… page ${p} of ${this.doc.numPages}`)
+        if (p % 10 === 0) status.setText(`Searching… page ${p} of ${this.doc!.numPages}`)
       }
       if (my === token) status.setText(n ? `${n} result${n === 1 ? '' : 's'}` : 'No results')
     }
@@ -1702,20 +1734,20 @@ export class PdfView extends FileView {
   /** Page Flip-style thumbnail grid; current page highlighted. */
   private renderThumbs(body: HTMLElement) {
     const grid = el('div', 'octavo-thumbs', body)
-    const io = new IntersectionObserver(async entries => {
+    const io = new IntersectionObserver(detach(async (entries: IntersectionObserverEntry[]) => {
       for (const e of entries) {
         if (!e.isIntersecting) continue
         const c = e.target as HTMLCanvasElement
         io.unobserve(c)
-        const page = await this.doc.getPage(Number(c.dataset.page))
+        const page = await this.doc!.getPage(Number(c.dataset.page))
         const v = page.getViewport({ scale: 140 / page.getViewport({ scale: 1 }).width })
         c.width = v.width; c.height = v.height
         await page.render({ canvasContext: c.getContext('2d')!, viewport: v }).promise
       }
-    }, { root: this.panel.body })
-    for (let p = 1; p <= this.doc.numPages; p++) {
+    }), { root: this.panel.body })
+    for (let p = 1; p <= this.doc!.numPages; p++) {
       const cell = el('div', `octavo-thumb${p === this.page ? ' is-current' : ''}`, grid)
-      const c = el('canvas', '', cell) as HTMLCanvasElement
+      const c = el('canvas', '', cell)
       c.dataset.page = String(p)
       el('div', 'octavo-thumb-n', cell, String(p))
       cell.onclick = () => { const from = this.page; this.goToPage(p); this.panel.close(); if (from !== p) this.offerBack(from) }

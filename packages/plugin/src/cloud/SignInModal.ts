@@ -45,14 +45,14 @@ export class SignInModal extends Modal {
     const input = form.createEl('input', { type: 'email', value: this.email, attr: { placeholder: 'you@example.com', autocomplete: 'email', 'aria-label': 'Email', required: 'true' } })
     const btn = form.createEl('button', { cls: 'mod-cta', text: 'Send code', attr: { type: 'submit', 'data-label': 'Send code' } })
     err.setText(error)
-    form.addEventListener('submit', async e => {
-      e.preventDefault()
+    const submit = async () => {
       const email = input.value.trim().toLowerCase()
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { err.setText('Enter a valid email address.'); input.focus(); return }
       err.setText(''); this.busy(btn, true, 'Sending…')
       try { await this.steps.start(email); this.email = email; this.codeStep() }
       catch (x) { this.busy(btn, false, ''); err.setText((x as Error).message) }
-    })
+    }
+    form.addEventListener('submit', e => { e.preventDefault(); void submit() })
     window.setTimeout(() => { input.focus(); input.select() })
   }
 
@@ -63,10 +63,9 @@ export class SignInModal extends Modal {
     const links = this.contentEl.createDiv({ cls: 'octavo-signin-links' })
     const resend = links.createEl('a', { text: 'Resend code', href: '#' })
     links.createEl('a', { text: 'Use a different email', href: '#' }).addEventListener('click', e => { e.preventDefault(); this.emailStep() })
-    resend.addEventListener('click', async e => {
+    resend.addEventListener('click', e => {
       e.preventDefault()
-      try { await this.steps.start(this.email); err.setText(''); resend.setText('Code sent ✓') }
-      catch (x) { err.setText((x as Error).message) }
+      this.steps.start(this.email).then(() => { err.setText(''); resend.setText('Code sent ✓') }, (x: Error) => err.setText(x.message))
     })
     const submit = async () => {
       const code = input.value.replace(/\D/g, '')

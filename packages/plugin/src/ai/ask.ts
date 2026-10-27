@@ -18,13 +18,18 @@ export function aiConfigured(s: OctavoSettings): boolean {
  * and never through an Octavo server. Octavo AI (provider 'octavo', Cloud + AI)
  * goes through CloudClient.ai() instead: see ./hosted.ts.
  */
+interface ApiError { error?: { message?: string } }
+interface AnthropicRes extends ApiError { content?: Array<{ type: string; text?: string }> }
+interface OpenAIRes extends ApiError { choices?: Array<{ message?: { content?: string } }> }
+interface OllamaChat { error?: string; message?: { content?: string } }
+
 const ollamaBase = (s: OctavoSettings) => (s.ai.baseUrl || 'http://localhost:11434').replace(/\/$/, '')
 
 /** Models installed in the local Ollama (empty list if it isn't running). */
 export async function listOllamaModels(s: OctavoSettings): Promise<string[]> {
   try {
     const res = await requestUrl({ url: `${ollamaBase(s)}/api/tags`, throw: false })
-    return res.status === 200 ? (res.json?.models ?? []).map((m: any) => String(m.name)) : []
+    return res.status === 200 ? ((res.json as { models?: Array<{ name: string }> } | null)?.models ?? []).map(m => String(m.name)) : []
   } catch { return [] }
 }
 
@@ -45,8 +50,9 @@ export async function askAI(s: OctavoSettings, prompt: string, onText?: (soFar: 
       body: JSON.stringify({ model: a.model || DEFAULT_MODELS.anthropic, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
       throw: false,
     })
-    if (res.status >= 400) throw new Error(res.json?.error?.message ?? `HTTP ${res.status}`)
-    return (res.json.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+    const j = res.json as AnthropicRes | null
+    if (res.status >= 400) throw new Error(j?.error?.message ?? `HTTP ${res.status}`)
+    return (j?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
   }
   if (a.provider === 'openai') {
     const res = await requestUrl({
@@ -56,8 +62,9 @@ export async function askAI(s: OctavoSettings, prompt: string, onText?: (soFar: 
       body: JSON.stringify({ model: a.model, messages: [{ role: 'user', content: prompt }] }),
       throw: false,
     })
-    if (res.status >= 400) throw new Error(res.json?.error?.message ?? `HTTP ${res.status}`)
-    return res.json.choices?.[0]?.message?.content ?? ''
+    const j = res.json as OpenAIRes | null
+    if (res.status >= 400) throw new Error(j?.error?.message ?? `HTTP ${res.status}`)
+    return j?.choices?.[0]?.message?.content ?? ''
   }
   throw new Error('No AI provider configured')
 }
@@ -70,8 +77,9 @@ async function askOllama(s: OctavoSettings, prompt: string, onText?: (soFar: str
   const url = `${ollamaBase(s)}/api/chat`
   if (onText) {
     // Ollama allows app:// origins by default, so the renderer can stream directly.
+    // fetch, not requestUrl: token streaming needs a ReadableStream body and requestUrl buffers the whole response.
     try {
-      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      const res = await activeWindow.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       if (!res.ok || !res.body) throw new Error(`Ollama HTTP ${res.status}`)
       const reader = res.body.getReader()
       const dec = new TextDecoder()
@@ -84,7 +92,7 @@ async function askOllama(s: OctavoSettings, prompt: string, onText?: (soFar: str
         while ((nl = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1)
           if (!line) continue
-          const j = JSON.parse(line)
+          const j = JSON.parse(line) as OllamaChat
           if (j.error) throw new Error(j.error)
           text += j.message?.content ?? ''
           onText(text)
@@ -96,8 +104,9 @@ async function askOllama(s: OctavoSettings, prompt: string, onText?: (soFar: str
     }
   }
   const res = await requestUrl({ url, method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, stream: false, options, messages: [{ role: 'user', content: prompt }] }), throw: false })
-  if (res.status >= 400) throw new Error(res.json?.error ?? `Ollama HTTP ${res.status}`)
-  const text = res.json.message?.content ?? ''
+  const j = res.json as OllamaChat | null
+  if (res.status >= 400) throw new Error(j?.error ?? `Ollama HTTP ${res.status}`)
+  const text = j?.message?.content ?? ''
   onText?.(text)
   return text
 }

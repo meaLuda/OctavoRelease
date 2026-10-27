@@ -1,14 +1,24 @@
-import { HoverPopover, Keymap, MarkdownView, TFile, type HoverParent } from 'obsidian'
+import { HoverPopover, Keymap, MarkdownView, TFile, type Events, type HoverParent } from 'obsidian'
 import { parseSubpath, splitLinktext, type Subpath } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import { besideLeaf } from '../platform'
 import { COLOR_CSS } from '../reader/colors'
 import { PdfDocCache, addsEmbed, darkScanColors, releaseCanvas, renderRegion, selectionMarks, type Mark } from './regionRender'
 import { pageLabel, hasOwnLabel, isDestroyedDocError } from './region'
-import { PDF_VIEW } from './PdfView'
+import { PDF_VIEW, type PdfView } from './PdfView'
+import type { PDFDocumentProxy } from './pdfjs'
 
 /** Embeds of a PDF region (PDF++ `![[Book.pdf#page=N&rect=l,b,r,t]]`), in Reading view and Live Preview alike. */
 const REGION_EMBED = '.internal-embed[src*=".pdf#" i][src*="rect=" i]'
+
+interface HoverLinkInfo { event: MouseEvent; source: string; hoverParent: HoverParent; targetEl: HTMLElement | null; linktext: string; sourcePath?: string }
+/** Our popover, tagged so a second hover-link on the same target keeps it; `targetEl`/`hide` are private Obsidian API. */
+type OctavoPopover = HoverPopover & { octavoPdf?: boolean; targetEl?: HTMLElement | null; hide?: () => void }
+/** Page preview settings (private API): per-source Mod overrides and each source's default. */
+interface PreviewSettingsApp {
+  internalPlugins?: { getPluginById?: (id: string) => { instance?: { overrides?: Record<string, unknown> } } | null }
+  workspace?: { hoverLinkSources?: Record<string, { defaultMod?: unknown } | undefined> }
+}
 
 /**
  * Region embeds and PDF hover previews in notes.
@@ -37,14 +47,14 @@ export class PdfNoteEmbeds {
     this.observe(document)
     plugin.registerEvent(app.workspace.on('window-open', (_w, win) => this.observe(win.document)))
     plugin.registerEvent(app.workspace.on('css-change', () => { for (const d of this.scanTimers.keys()) this.scan(d, true) }))
-    plugin.registerEvent(app.workspace.on('hover-link' as any, (info: any) => this.onHoverLink(info)))
+    plugin.registerEvent((app.workspace as Events).on('hover-link', (info: unknown) => this.onHoverLink(info as HoverLinkInfo)))
     plugin.register(() => this.docs.clear())
   }
 
   /** Region crops that left the DOM: free their canvas memory and drop the crop, so a re-attached embed renders again. */
   private releaseRemoved(muts: MutationRecord[]) {
     for (const m of muts) for (const n of Array.from(m.removedNodes)) {
-      if (n.nodeType !== 1 || (n as Node).isConnected) continue
+      if (n.nodeType !== 1 || n.isConnected) continue
       const el = n as HTMLElement
       const boxes = el.matches('.octavo-region-embed') ? [el] : Array.from(el.querySelectorAll<HTMLElement>('.octavo-region-embed'))
       for (const box of boxes) {
@@ -116,7 +126,7 @@ export class PdfNoteEmbeds {
   }
 
   /** Render the page (cropped to rect, quote marked for selection) into `box`. The document is held open while rendering. */
-  private fill(box: HTMLElement, file: TFile, sp: Exclude<Subpath, { type: 'cfi' }>, cssWidth: number): Promise<{ pdf: any; n: number }> {
+  private fill(box: HTMLElement, file: TFile, sp: Exclude<Subpath, { type: 'cfi' }>, cssWidth: number): Promise<{ pdf: PDFDocumentProxy; n: number }> {
     return this.docs.use(file, async pdf => {
       const n = Math.min(pdf.numPages, sp.type === 'selection' ? sp.selection.page : sp.page)
       const page = await pdf.getPage(n)
@@ -127,7 +137,7 @@ export class PdfNoteEmbeds {
       const marks: Mark[] = sp.type === 'selection' ? await selectionMarks(page, sp.selection, color).catch(() => []) : []
       // a quote: the full-width band around it, so the preview opens on the passage
       const vb: number[] = page.view ?? page.getViewport({ scale: 1 }).viewBox
-      const band = marks.length ? [vb[0]!, Math.max(vb[1]!, Math.min(...marks.map(m => m.rect[1])) - 140), vb[2]!, Math.min(vb[3]!, Math.max(...marks.map(m => m.rect[3])) + 140)] : null
+      const band = marks.length ? [vb[0], Math.max(vb[1], Math.min(...marks.map(m => m.rect[1])) - 140), vb[2], Math.min(vb[3], Math.max(...marks.map(m => m.rect[3])) + 140)] : null
       const canvas = await renderRegion(page, sp.type === 'rect' ? sp.rect : band, cssWidth, {
         doc, marks, dark: darkScanColors(dark, this.plugin.settings.pdfDark, scanned),
       })
@@ -145,10 +155,11 @@ export class PdfNoteEmbeds {
   /** Open the book in Octavo at the link (reusing an open Octavo tab for it). */
   private async open(file: TFile, subpath: string, e: MouseEvent | KeyboardEvent) {
     const app = this.plugin.app
-    const existing = app.workspace.getLeavesOfType(PDF_VIEW).find(l => (l.view as any).file === file)
+    const existing = app.workspace.getLeavesOfType(PDF_VIEW).find(l => (l.view as PdfView).file === file)
     if (existing && !Keymap.isModEvent(e)) {
       await app.workspace.revealLeaf(existing)
-      await (existing.view as any).setEphemeralState?.({ subpath })
+      const view = existing.view as PdfView
+      view.setEphemeralState({ subpath })
       return
     }
     const mod = Keymap.isModEvent(e)
@@ -159,14 +170,14 @@ export class PdfNoteEmbeds {
 
   /** Does this hover source need Ctrl/Cmd held? Follows the Page preview settings when they're readable. */
   private needsMod(source: string): boolean {
-    const app = this.plugin.app as any
+    const app = this.plugin.app as PreviewSettingsApp
     const ov = app.internalPlugins?.getPluginById?.('page-preview')?.instance?.overrides?.[source]
     if (typeof ov === 'boolean') return ov
     const def = app.workspace?.hoverLinkSources?.[source]?.defaultMod
     return typeof def === 'boolean' ? def : source !== 'preview'
   }
 
-  private onHoverLink(info: { event: MouseEvent; source: string; hoverParent: HoverParent; targetEl: HTMLElement | null; linktext: string; sourcePath?: string }) {
+  private onHoverLink(info: HoverLinkInfo) {
     if (!info?.linktext || !info.hoverParent) return
     const { path, subpath } = splitLinktext(info.linktext)
     if (!/\.pdf$/i.test(path)) return
@@ -177,14 +188,14 @@ export class PdfNoteEmbeds {
     if (this.needsMod(info.source) && !Keymap.isModEvent(info.event)) return
     // after every other handler (Page preview builds its own PDF popover synchronously): ours replaces it
     queueMicrotask(() => {
-      const cur = (info.hoverParent as any).hoverPopover
+      const cur: OctavoPopover | null = info.hoverParent.hoverPopover
       if (cur?.octavoPdf && cur.targetEl === info.targetEl) return
-      const pop = new HoverPopover(info.hoverParent, info.targetEl)
-      ;(pop as any).octavoPdf = true
+      const pop: OctavoPopover = new HoverPopover(info.hoverParent, info.targetEl)
+      pop.octavoPdf = true
       pop.hoverEl.addClass('octavo-pdf-hover')
       const head = pop.hoverEl.createDiv({ cls: 'octavo-pdf-hover-title', text: file.basename })
       const box = pop.hoverEl.createDiv({ cls: 'octavo-region-embed is-hover', text: 'Loading…' })
-      box.addEventListener('click', e => { e.preventDefault(); (pop as any).hide?.(); void this.open(file, subpath, e) })
+      box.addEventListener('click', e => { e.preventDefault(); pop.hide?.(); void this.open(file, subpath, e) })
       void this.fill(box, file, sp, sp.type === 'rect' ? Math.min(560, Math.max(240, (sp.rect[2] - sp.rect[0]) * 4 / 3)) : 420)
         .then(async ({ pdf, n }) => {
           const labels = await Promise.resolve().then(() => pdf.getPageLabels?.()).catch(() => null)

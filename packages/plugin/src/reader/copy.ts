@@ -4,6 +4,7 @@ import {
   type CopyFormat, type HighlightColor, type TemplateVars,
 } from '@octavo/shared'
 import type OctavoPlugin from '../main'
+import { propText } from '../library/dedupe'
 
 /** What a reader view hands over for "Copy as…" and "Copy citation": a selection or a highlight. */
 export interface CopySource {
@@ -34,8 +35,8 @@ export function copyVars(plugin: OctavoPlugin, src: CopySource): TemplateVars {
     label: src.label ?? '',
     link,
     color: src.color ?? plugin.settings.defaultColor,
-    book: String(props.title ?? src.title),
-    author: author ? String(author) : '',
+    book: propText(props.title ?? src.title),
+    author: author ? propText(author) : '',
     note: src.comment ?? '',
     date: moment().format('YYYY-MM-DD'),
     citekey: citekeyFrom(props) ?? '',

@@ -28,7 +28,7 @@ export interface Line { y: number; x0: number; x1: number; size: number; pieces:
 const median = (xs: number[]) => {
   if (!xs.length) return 0
   const s = [...xs].sort((a, b) => a - b)
-  return s[Math.floor((s.length - 1) / 2)]!
+  return s[Math.floor((s.length - 1) / 2)]
 }
 
 /**
@@ -65,7 +65,7 @@ function rows(lines: Line[]): Line[][] {
   const out: Line[][] = []
   for (const l of [...lines].sort((a, b) => b.y - a.y)) {
     const r = out[out.length - 1]
-    if (r && Math.abs(r[0]!.y - l.y) < Math.max(2, l.size * 0.5)) r.push(l)
+    if (r && Math.abs(r[0].y - l.y) < Math.max(2, l.size * 0.5)) r.push(l)
     else out.push([l])
   }
   return out
@@ -77,11 +77,11 @@ function rows(lines: Line[]): Line[][] {
  */
 export function mergeRows(lines: Line[]): Line[] {
   return rows(lines).map(r => {
-    if (r.length === 1) return r[0]!
+    if (r.length === 1) return r[0]
     r.sort((a, b) => a.x0 - b.x0)
     const chars = r.flatMap(l => Array(Math.max(1, l.text.length)).fill(l.size) as number[])
     return {
-      y: median(r.map(l => l.y)), x0: r[0]!.x0, x1: Math.max(...r.map(l => l.x1)), size: median(chars),
+      y: median(r.map(l => l.y)), x0: r[0].x0, x1: Math.max(...r.map(l => l.x1)), size: median(chars),
       pieces: r.flatMap((l, i) => i ? [null, ...l.pieces] : l.pieces), text: r.map(l => l.text).join(' '), parts: r,
     }
   })
@@ -133,7 +133,7 @@ export function columnRuns(lines: Line[], depth = 0): Line[][] {
   for (const l of sorted) {
     if (l.x1 <= gutter + 1) left.push(l)
     else if (l.x0 >= gutter - 1) right.push(l)
-    else { const spanning = !left.length && !right.length && runs.length && runs[runs.length - 1]!.every(x => x.x0 < gutter - 1 && x.x1 > gutter + 1); flush(); if (spanning) runs[runs.length - 1]!.push(l); else runs.push([l]) }
+    else { const spanning = !left.length && !right.length && runs.length && runs[runs.length - 1].every(x => x.x0 < gutter - 1 && x.x1 > gutter + 1); flush(); if (spanning) runs[runs.length - 1].push(l); else runs.push([l]) }
   }
   flush()
   return runs
@@ -146,13 +146,13 @@ export function columnRuns(lines: Line[], depth = 0): Line[][] {
  */
 export function sectionBands(lines: Line[], bodySize: number): Line[][] {
   const sorted = [...lines].sort((a, b) => b.y - a.y)
-  const gaps = sorted.slice(1).map((l, i) => sorted[i]!.y - l.y).filter(g => g > bodySize * 0.5 && g < bodySize * 4)
+  const gaps = sorted.slice(1).map((l, i) => sorted[i].y - l.y).filter(g => g > bodySize * 0.5 && g < bodySize * 4)
   const lineGap = median(gaps) || bodySize * 1.3
   const bands: Line[][] = []
   sorted.forEach((l, i) => {
-    const gap = i ? sorted[i - 1]!.y - l.y : Infinity
+    const gap = i ? sorted[i - 1].y - l.y : Infinity
     if (!bands.length || (gap >= lineGap * 1.8 && l.size >= bodySize * 1.15)) bands.push([l])
-    else bands[bands.length - 1]!.push(l)
+    else bands[bands.length - 1].push(l)
   })
   return bands
 }
@@ -173,7 +173,7 @@ export function findGutter(lines: Line[]): number | null {
     if (c === best) { if (start < 0) start = i; if (i - start > run[1] - run[0]) run = [start, i] }
     else start = -1
   })
-  const x = xs[Math.round((run[0] + run[1]) / 2)]!
+  const x = xs[Math.round((run[0] + run[1]) / 2)]
   const left = lines.filter(l => l.x1 <= x + 1), right = lines.filter(l => l.x0 >= x - 1)
   const n = lines.length
   if (best > Math.max(2, n * 0.2) || left.length < 3 || right.length < 3 || left.length < n * 0.15 || right.length < n * 0.15) return null
@@ -205,15 +205,15 @@ export class Mapped {
       if (/[A-Za-z] ?[-\u00AD]$/.test(this.text) && /^[a-z]/.test(b.text)) { this.pop(); this.trimEnd() }
       else this.push(' ', -1, -1, -1)
     }
-    for (let i = 0; i < b.text.length; i++) this.push(b.text[i]!, b.page[i]!, b.item[i]!, b.off[i]!)
+    for (let i = 0; i < b.text.length; i++) this.push(b.text[i], b.page[i], b.item[i], b.off[i])
   }
   /** Source ranges of characters [s, e), one per item, in reading order. */
   ranges(s: number, e: number): ItemRange[] {
     const out: ItemRange[] = []
     for (let i = s; i < e; i++) {
-      const item = this.item[i]!
+      const item = this.item[i]
       if (item < 0) continue
-      const page = this.page[i]!, off = this.off[i]!
+      const page = this.page[i], off = this.off[i]
       const r = out.find(x => x.page === page && x.item === item)
       if (r) { r.start = Math.min(r.start, off); r.end = Math.max(r.end, off + 1) }
       else out.push({ page, item, start: off, end: off + 1 })
@@ -226,8 +226,8 @@ function lineText(l: Line, items: TextItem[], page: number): Mapped {
   const m = new Mapped()
   for (const p of l.pieces) {
     if (!p) { m.push(' ', -1, -1, -1); continue }
-    const s = items[p.item]!.str
-    for (let k = p.start; k < p.end; k++) m.push(s[k]!, page, p.item, k)
+    const s = items[p.item].str
+    for (let k = p.start; k < p.end; k++) m.push(s[k], page, p.item, k)
   }
   m.trimEnd()
   return m
@@ -254,7 +254,7 @@ export function pageParas(page: number, input: PageInput, neighbours: PageInput[
   // columns are found on fragments; each column's fragments are then merged back into rows
   const runs = sectionBands(body, bodySize).flatMap(b => columnRuns(b)).map(mergeRows)
   const gaps: number[] = []
-  for (const r of runs) for (let i = 1; i < r.length; i++) { const g = r[i - 1]!.y - r[i]!.y; if (g > bodySize * 0.3 && g < bodySize * 4) gaps.push(g) }
+  for (const r of runs) for (let i = 1; i < r.length; i++) { const g = r[i - 1].y - r[i].y; if (g > bodySize * 0.3 && g < bodySize * 4) gaps.push(g) }
   const lineGap = median(gaps) || bodySize * 1.3
   const paras: Para[] = []
   let cur: { heading: boolean; lines: Line[] } | null = null
@@ -263,10 +263,10 @@ export function pageParas(page: number, input: PageInput, neighbours: PageInput[
     const left = Math.min(...run.map(l => l.x0)), right = Math.max(...run.map(l => l.x1))
     run.forEach((l, i) => {
       const heading = l.size >= bodySize * 1.2 && l.text.length < 140
-      const prev = i > 0 ? run[i - 1]! : null
+      const prev = i > 0 ? run[i - 1] : null
       let brk = !cur || heading !== cur.heading
       if (!brk && cur) {
-        const last = cur.lines[cur.lines.length - 1]!
+        const last = cur.lines[cur.lines.length - 1]
         if (heading) brk = Math.abs(last.size - l.size) > 0.5 || last.y - l.y > l.size * 1.8
         else if (!prev) brk = !continues(last.text, l.text) // column/band change
         else {
@@ -299,9 +299,9 @@ const MAX_LEN = 320
 /** Sentence spans [start, end) over `text`, trimmed, abbreviations and stray numbering merged, long ones split. */
 export function sentences(text: string, locale?: string): Array<[number, number]> {
   const raw: Array<[number, number]> = []
-  const Seg = (Intl as any).Segmenter
+  const Seg = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter
   if (Seg) {
-    for (const s of new Seg(locale, { granularity: 'sentence' }).segment(text) as Iterable<{ index: number; segment: string }>) raw.push([s.index, s.index + s.segment.length])
+    for (const s of new Seg(locale, { granularity: 'sentence' }).segment(text)) raw.push([s.index, s.index + s.segment.length])
   } else {
     const re = /[.!?…]+["'”’)\]]*\s+(?=["“‘([]?[A-Z0-9])/g
     let last = 0
@@ -320,15 +320,15 @@ export function sentences(text: string, locale?: string): Array<[number, number]
   }
   const out: Array<[number, number]> = []
   for (let [s, e] of merged) {
-    while (s < e && /\s/.test(text[s]!)) s++
-    while (e > s && /\s/.test(text[e - 1]!)) e--
+    while (s < e && /\s/.test(text[s])) s++
+    while (e > s && /\s/.test(text[e - 1])) e--
     while (e - s > MAX_LEN) {
       const chunk = text.slice(s, s + MAX_LEN)
       const cut = Math.max(chunk.lastIndexOf('; '), chunk.lastIndexOf(', '), chunk.lastIndexOf(' — '))
       const at = cut > MAX_LEN * 0.4 ? cut + 1 : (chunk.lastIndexOf(' ') > MAX_LEN * 0.4 ? chunk.lastIndexOf(' ') : MAX_LEN)
       out.push([s, s + at])
       s += at
-      while (s < e && /\s/.test(text[s]!)) s++
+      while (s < e && /\s/.test(text[s])) s++
     }
     if (e > s) out.push([s, e])
   }
@@ -406,8 +406,8 @@ export interface AudioLike {
   play(): Promise<void>
   pause(): void
   removeAttribute(name: string): void
-  onended: ((this: any, ev: Event) => any) | null
-  onerror: ((this: any, ev: Event | string) => any) | null
+  onended: ((ev: Event) => unknown) | null
+  onerror: ((ev: Event | string) => unknown) | null
 }
 
 /** Octavo Cloud voices: fetch an audio URL per sentence, prefetching the next one while this one plays. */
@@ -632,7 +632,7 @@ export class PdfReadAloud {
       if (idx === Number.MAX_SAFE_INTEGER) idx = list.length ? list.length - 1 : -1
     }
     if (this.sleepDue) return this.finish('sleep')
-    const u = list[idx]!
+    const u = list[idx]
     this.page = page
     this.index = idx
     this.o.onSentence?.(page, u.ranges, u)

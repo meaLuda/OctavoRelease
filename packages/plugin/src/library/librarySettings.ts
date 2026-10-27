@@ -3,6 +3,7 @@ import type OctavoPlugin from '../main'
 import { LIBRARY_VIEW, LibraryView } from './LibraryView'
 import { describeFilter } from './organise'
 import { TextPromptModal } from '../reader/modals'
+import { FolderPickModal } from './FolderPickModal'
 
 class FolderSuggest extends AbstractInputSuggest<string> {
   constructor(app: App, private input: HTMLInputElement) { super(app, input); this.limit = 20 }
@@ -27,6 +28,7 @@ export function renderLibrarySettings(c: HTMLElement, plugin: OctavoPlugin, redr
   new Setting(c).setName('Folders to scan').setDesc(lib.folders.length
     ? 'The library shows books in these folders, plus any book you have opened (it has a book note).'
     : 'The library scans the whole vault. Add folders to limit it.')
+    .addButton(b => b.setButtonText('Choose folders…').onClick(() => new FolderPickModal(plugin, () => { refreshLibraries(plugin); redraw() }).open()))
   const list = c.createDiv({ cls: 'octavo-settings-list' })
   for (const folder of lib.folders) {
     new Setting(list).setName(folder).addExtraButton(b => b.setIcon('x').setTooltip('Remove folder').onClick(async () => {
@@ -35,7 +37,7 @@ export function renderLibrarySettings(c: HTMLElement, plugin: OctavoPlugin, redr
   }
   let draft = ''
   new Setting(list).setName('Add a folder').addSearch(t => {
-    t.setPlaceholder('Library/Books').onChange(v => (draft = v))
+    t.setPlaceholder('Books').onChange(v => (draft = v))
     new FolderSuggest(plugin.app, t.inputEl)
   }).addButton(b => b.setButtonText('Add').onClick(async () => {
     const f = normalizePath(draft.trim())
@@ -47,8 +49,8 @@ export function renderLibrarySettings(c: HTMLElement, plugin: OctavoPlugin, redr
     .setDesc('New EPUB and PDF files in the scanned folders (or anywhere, when no folders are set) show up in an open library right away.')
     .addToggle(t => t.setValue(lib.watch !== false).onChange(async v => { lib.watch = v; await save() }))
 
-  new Setting(c).setName('Download Cloud books to folder')
-    .setDesc('Where books opened from your Octavo Cloud library are placed. Their Cloud collections and tags are copied to the book note.')
+  new Setting(c).setName('Download cloud books to folder')
+    .setDesc('Where books opened from your Octavo Cloud library are placed. Their cloud collections and tags are copied to the book note.')
     .addSearch(t => {
       t.setPlaceholder('Library').setValue(lib.cloudFolder ?? 'Library').onChange(v => {
         const f = normalizePath(v.trim() || 'Library')

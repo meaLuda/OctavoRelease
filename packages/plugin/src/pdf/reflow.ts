@@ -12,7 +12,7 @@ interface Line { text: string; y: number; x0: number; x1: number; size: number; 
 const median = (xs: number[]) => {
   if (!xs.length) return 0
   const s = [...xs].sort((a, b) => a - b)
-  return s[Math.floor((s.length - 1) / 2)]!
+  return s[Math.floor((s.length - 1) / 2)]
 }
 
 export function toLines(items: RawItem[]): Line[] {
@@ -44,7 +44,7 @@ export function reflow(items: RawItem[]): Block[] {
   lines = lines.filter((l, i) => !((i === 0 || i === lines.length - 1) && /^[\divxlcIVXLC\s.\-–—]{1,8}$/.test(l.text)))
   if (!lines.length) return []
   const bodySize = median(lines.map(l => l.size))
-  const gaps = lines.slice(1).map((l, i) => lines[i]!.y - l.y).filter(g => g > 0 && g < bodySize * 4)
+  const gaps = lines.slice(1).map((l, i) => lines[i].y - l.y).filter(g => g > 0 && g < bodySize * 4)
   const lineGap = median(gaps) || bodySize * 1.3
   const left = median(lines.filter(l => Math.abs(l.size - bodySize) < 0.5).map(l => l.x0))
   const right = Math.max(...lines.map(l => l.x1))
@@ -63,7 +63,7 @@ export function reflow(items: RawItem[]): Block[] {
       else if (/[A-Za-z]-$/.test(text) && /^[a-z]/.test(l.text)) text = text.slice(0, -1) + l.text // re-join hyphenated word
       else text += ' ' + l.text
     }
-    blocks.push({ type: 'p', text, size: bodySize, top: para[0]!.y + para[0]!.size, bottom: para[para.length - 1]!.y })
+    blocks.push({ type: 'p', text, size: bodySize, top: para[0].y + para[0].size, bottom: para[para.length - 1].y })
     para = []
   }
   lines.forEach((l, i) => {

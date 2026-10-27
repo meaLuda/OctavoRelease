@@ -60,7 +60,7 @@ export function tagsOf(v: unknown): string[] {
 
 /** `series` frontmatter: a string, or the first entry of a list; "Name #3" keeps just the name. */
 export function seriesOf(v: unknown): string | undefined {
-  const s = Array.isArray(v) ? v[0] : v
+  const s: unknown = Array.isArray(v) ? v[0] : v
   if (typeof s !== 'string' && typeof s !== 'number') return undefined
   const name = String(s).replace(/\[\[|\]\]/g, '').replace(/\s*#\s*\d+(\.\d+)?\s*$/, '').trim()
   return name || undefined

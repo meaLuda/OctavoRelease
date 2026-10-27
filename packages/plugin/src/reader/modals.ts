@@ -1,5 +1,6 @@
 import { AbstractInputSuggest, App, Modal, Setting, MarkdownRenderer, Component } from 'obsidian'
 import { applySuggestion, parseTags, tagSuggestions } from './tags'
+import { destructive } from '../platform'
 
 /** Small promise-based text prompt (multi-line). Resolves null on cancel. */
 export class TextPromptModal extends Modal {
@@ -40,7 +41,7 @@ export class CollectionModal extends Modal {
   onOpen() {
     this.setTitle('New collection')
     const { contentEl } = this
-    const name = contentEl.createEl('input', { type: 'text', cls: 'octavo-col-name', attr: { placeholder: 'Name, e.g. Business or Exam prep' } })
+    const name = contentEl.createEl('input', { type: 'text', cls: 'octavo-col-name', attr: { placeholder: 'Name, e.g. Business or exam prep' } })
     const msg = contentEl.createDiv({ cls: 'octavo-col-msg' })
     contentEl.createDiv({ cls: 'octavo-col-label', text: 'Add books' })
     const filter = contentEl.createEl('input', { type: 'search', cls: 'octavo-col-filter', attr: { placeholder: 'Filter books' } })
@@ -156,7 +157,7 @@ export class TypeToConfirmModal extends Modal {
     let go: HTMLButtonElement | null = null
     new Setting(this.contentEl)
       .addButton(b => b.setButtonText('Cancel').onClick(() => this.close()))
-      .addButton(b => { go = b.buttonEl; b.setButtonText(this.button).setWarning().setDisabled(true).onClick(() => { if (input.value.trim() === this.word) { this.done = true; this.resolve(true); this.close() } }) })
+      .addButton(b => { go = b.buttonEl; destructive(b.setButtonText(this.button)).setDisabled(true).onClick(() => { if (input.value.trim() === this.word) { this.done = true; this.resolve(true); this.close() } }) })
     input.addEventListener('input', () => { if (go) go.disabled = input.value.trim() !== this.word })
     window.setTimeout(() => input.focus())
   }

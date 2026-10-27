@@ -3,7 +3,7 @@ import { HIGHLIGHT_COLORS, type HighlightColor } from '@octavo/shared'
 import { collectTags } from './tags'
 
 export const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, parent?: HTMLElement, text?: string) => {
-  const e = document.createElement(tag)
+  const e = createEl(tag)
   if (cls) e.className = cls
   if (text !== undefined) e.textContent = text
   parent?.appendChild(e)
@@ -134,21 +134,21 @@ export class ReaderChrome {
 }
 
 export interface PopoverActions {
-  color(c: HighlightColor): void
-  underline(): void
-  note(): void
+  color: (c: HighlightColor) => void
+  underline: () => void
+  note: () => void
   /** Add or edit tags (creates the highlight first when used on a fresh selection). */
-  tags?(): void
-  copyLink(): void
+  tags?: () => void
+  copyLink: () => void
   /** "Copy as…" submenu: copy templates and citation. */
-  copyAs?(e: MouseEvent): void
-  define(): void
-  ask(): void
+  copyAs?: (e: MouseEvent) => void
+  define: () => void
+  ask: () => void
   /** Summarise the selection with AI (fresh selections only). */
-  summarise?(): void
-  speak(): void
-  remove?(): void
-  openInNote?(): void
+  summarise?: () => void
+  speak: () => void
+  remove?: () => void
+  openInNote?: () => void
 }
 
 /** Selection / highlight popover: five colours + underline + Note + Tags + Copy link + Define + Ask. */

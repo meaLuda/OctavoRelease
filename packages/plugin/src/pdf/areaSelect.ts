@@ -58,10 +58,10 @@ export class AreaSelect {
 
   private down(e: PointerEvent) {
     if (!this.active || e.button > 0) return
-    const pageEl = (e.target as Element).closest?.('.page') as HTMLElement | null
+    const pageEl = (e.target as Element).closest?.<HTMLElement>('.page')
     if (!pageEl || !this.container.contains(pageEl)) return
     e.preventDefault(); e.stopPropagation()
-    const wrap = (pageEl.querySelector('.canvasWrapper') as HTMLElement | null) ?? pageEl
+    const wrap = pageEl.querySelector<HTMLElement>('.canvasWrapper') ?? pageEl
     const r = wrap.getBoundingClientRect()
     const rectEl = pageEl.createDiv({ cls: 'octavo-pdf-area' })
     this.drag = { pageEl, wrap, x0: e.clientX - r.left, y0: e.clientY - r.top, rectEl, id: e.pointerId }

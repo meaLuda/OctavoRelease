@@ -16,7 +16,7 @@ export function makeStub(s: Omit<CloudStub, 'octavo-cloud' | 'note'>): string {
 export function parseStub(text: string): CloudStub | null {
   if (text.length > STUB_MAX || !text.trimStart().startsWith('{')) return null
   try {
-    const j = JSON.parse(text)
-    return j && j['octavo-cloud'] === 1 && typeof j.id === 'string' ? j : null
+    const j = JSON.parse(text) as Partial<CloudStub> | null
+    return j && j['octavo-cloud'] === 1 && typeof j.id === 'string' ? j as CloudStub : null
   } catch { return null }
 }

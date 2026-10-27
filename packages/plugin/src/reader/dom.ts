@@ -32,10 +32,10 @@ export function indexText(root: Node): TextIndex {
 
 function locate(idx: TextIndex, offset: number): [Text, number] | null {
   let lo = 0, hi = idx.starts.length - 1
-  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (idx.starts[mid]! <= offset) lo = mid; else hi = mid - 1 }
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (idx.starts[mid] <= offset) lo = mid; else hi = mid - 1 }
   const node = idx.nodes[lo]
   if (!node) return null
-  return [node, Math.min(offset - idx.starts[lo]!, node.data.length)]
+  return [node, Math.min(offset - idx.starts[lo], node.data.length)]
 }
 
 export function rangeFromOffsets(idx: TextIndex, start: number, end: number): Range | null {
@@ -51,13 +51,13 @@ export function rangeFromOffsets(idx: TextIndex, start: number, end: number): Ra
 export function offsetOf(idx: TextIndex, node: Node, offset: number): number {
   if (node.nodeType === Node.TEXT_NODE) {
     const i = idx.nodes.indexOf(node as Text)
-    if (i >= 0) return idx.starts[i]! + offset
+    if (i >= 0) return idx.starts[i] + offset
   }
   // element container: find first text node at/after the child offset
   const r = node.ownerDocument!.createRange()
   r.setStart(node, offset)
   for (let i = 0; i < idx.nodes.length; i++) {
-    if (r.comparePoint(idx.nodes[i]!, 0) >= 0) return idx.starts[i]!
+    if (r.comparePoint(idx.nodes[i], 0) >= 0) return idx.starts[i]
   }
   return idx.text.length
 }
