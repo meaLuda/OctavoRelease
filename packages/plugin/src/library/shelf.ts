@@ -65,7 +65,7 @@ class ShelfView extends BasesView {
   private linkTarget(v: unknown, source: string): TFile | null {
     if (typeof v !== 'string') return null
     const m = /\[\[([^\]|#]+)/.exec(v)
-    return this.app.metadataCache.getFirstLinkpathDest(m ? m[1]! : v, source)
+    return this.app.metadataCache.getFirstLinkpathDest(m ? m[1] : v, source)
   }
 }
 

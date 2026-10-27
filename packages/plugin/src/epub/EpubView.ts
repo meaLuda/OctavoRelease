@@ -1,6 +1,6 @@
 import { FileView, Menu, Notice, Platform, TFile, WorkspaceLeaf, moment, setIcon } from 'obsidian'
 import { besideLeaf, canPopout } from '../platform'
-import { makeBook } from '@octavo/foliate/view.js'
+import { makeBook, type View, type Book, type TocItem, type RelocateDetail, type Renderer } from '@octavo/foliate/view.js'
 import { Overlayer } from '@octavo/foliate/overlayer.js'
 import * as CFI from '@octavo/foliate/epubcfi.js'
 import { tag } from '@octavo/foliate/tags.js'
@@ -23,12 +23,13 @@ import { showCopyMenu, type CopySource } from '../reader/copy'
 
 export const EPUB_VIEW = 'octavo-epub'
 
-interface Loc { cfi: string; fraction: number; index: number; range?: Range; tocItem?: { label?: string; href?: string }; pageItem?: { label?: string }; section?: { current: number; total: number }; location?: { current: number; next: number; total: number } }
+// foliate's View re-emits relocate without the section index
+type Loc = RelocateDetail & { index?: number }
 
 export class EpubView extends FileView {
   allowNoFile = false
-  private foliate: any = null
-  private book: any = null
+  private foliate: View | null = null
+  private book: Book | null = null
   private root!: HTMLElement
   private stage!: HTMLElement
   private chrome!: ReaderChrome
@@ -41,6 +42,7 @@ export class EpubView extends FileView {
   private backlinks: Backlink[] = []
   private bookmarks: string[] = []
   private loc: Loc | null = null
+  private lastCss: { r: Renderer; css: string } | null = null
   private saveTimer = 0
   private pageEnter = 0
   private pageChars = 0
@@ -80,8 +82,8 @@ export class EpubView extends FileView {
       appearance: () => this.panel.open('appearance'),
       speak: () => void this.toggleSpeak(),
       more: e => this.moreMenu(e),
-      prev: () => this.foliate?.goLeft(),
-      next: () => this.foliate?.goRight(),
+      prev: () => { void this.foliate?.goLeft() },
+      next: () => { void this.foliate?.goRight() },
       footerTap: () => this.cycleFooter(),
     }, () => this.plugin.settings.autoHideMs, visible => this.setImmersive(!visible))
     this.popover = new SelectionPopover(this.root)
@@ -111,20 +113,21 @@ export class EpubView extends FileView {
       const head = new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer())
       this.bookId = await bookIdFromBytes(head, blob.size)
       const fileObj = new File([blob], file.name, { type: blob.type })
-      this.book = await makeBook(fileObj)
-      this.book.transformTarget?.addEventListener('data', ({ detail }: any) => {
+      const book = await makeBook(fileObj)
+      this.book = book
+      book.transformTarget?.addEventListener('data', ({ detail }) => {
         if (/x?html/.test(detail.type)) detail.data = Promise.resolve(detail.data).then((d: string) => sanitizeSection(d))
       })
-      const meta = this.book.metadata ?? {}
+      const meta = book.metadata ?? {}
       this.title = tidyTitle(formatLang(meta.title) || '') || file.basename
       const author = formatAuthors(meta.author)
-      ;(this.leaf as any).updateHeader?.()
+      ;(this.leaf as WorkspaceLeaf & { updateHeader?: () => void }).updateHeader?.()
 
-      this.note = await this.plugin.library.ensureNote(file, { id: this.bookId, title: this.title, author, format: file.extension, language: meta.language })
+      this.note = await this.plugin.library.ensureNote(file, { id: this.bookId, title: this.title, author, format: file.extension, language: meta.language as string | undefined })
       const props = this.plugin.library.getProps(this.note)
       if (!props.cover) {
         try {
-          const cover = await this.book.getCover?.()
+          const cover = await book.getCover?.()
           const path = await this.plugin.library.saveCover(this.bookId, cover ?? null)
           if (path) await this.plugin.library.setProps(this.note, { cover: `[[${path}]]` })
         } catch { /* no cover */ }
@@ -132,12 +135,12 @@ export class EpubView extends FileView {
       this.bookmarks = Array.isArray(props.bookmarks) ? props.bookmarks.filter((x: unknown) => typeof x === 'string') : []
 
       loading.remove()
-      const view: any = document.createElement(tag('foliate-view'))
+      const view = createEl(tag('foliate-view'))
       view.addClass('octavo-foliate')
       this.stage.appendChild(view)
       this.foliate = view
       this.wireFoliate(view)
-      await view.open(this.book)
+      await view.open(book)
       this.applyLook()
       await this.reloadHighlightsFromNote()
       this.refreshBacklinks()
@@ -198,19 +201,19 @@ export class EpubView extends FileView {
   }
 
   /** Deep links: `[[book.epub#cfi=…]]` open here. */
-  async setEphemeralState(state: any): Promise<void> {
+  setEphemeralState(state: unknown): void {
     super.setEphemeralState?.(state)
-    const sub = state?.subpath
+    const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
     if (!this.ready) { this.pendingSubpath = sub; return }
-    await this.navigateSubpath(sub)
+    void this.navigateSubpath(sub)
   }
 
   private async navigateSubpath(sub: string) {
     const sp = parseSubpath(sub)
     if (sp?.type !== 'cfi') return
     const from = this.loc?.cfi
-    await this.foliate.goTo(sp.cfi)
+    await this.foliate!.goTo(sp.cfi)
     this.flash(sp.cfi)
     if (from) this.offerBack(from)
   }
@@ -228,26 +231,39 @@ export class EpubView extends FileView {
     return new Blob([await this.app.vault.readBinary(file)])
   }
 
-  private wireFoliate(view: any) {
-    view.addEventListener('relocate', (e: CustomEvent) => this.onRelocate(e.detail))
-    view.addEventListener('load', (e: CustomEvent) => this.onSectionLoad(e.detail.doc, e.detail.index))
-    view.addEventListener('create-overlay', (e: CustomEvent) => this.drawSection(e.detail.index))
-    view.addEventListener('draw-annotation', (e: CustomEvent) => {
+  private wireFoliate(view: View) {
+    view.addEventListener('relocate', e => this.onRelocate(e.detail))
+    view.addEventListener('load', e => this.onSectionLoad(e.detail.doc, e.detail.index))
+    view.addEventListener('create-overlay', e => this.drawSection(e.detail.index))
+    view.addEventListener('draw-annotation', e => {
       const { draw, annotation } = e.detail
       const color = COLOR_CSS[annotation.color as HighlightColor] ?? COLOR_CSS.yellow
       if (annotation.kind === 'backlink') draw(Overlayer.squiggly, { color: 'var(--octavo-backlink, #8a7cff)', width: 1.5 })
       else if (annotation.style === 'underline') draw(Overlayer.underline, { color, width: 2.5 })
       else draw(Overlayer.highlight, { color })
     })
-    view.addEventListener('show-annotation', (e: CustomEvent) => this.onAnnotationClick(e.detail.value, e.detail.range))
-    view.addEventListener('external-link', (e: CustomEvent) => {
+    view.addEventListener('show-annotation', e => this.onAnnotationClick(e.detail.value, e.detail.range))
+    view.addEventListener('external-link', e => {
       e.preventDefault()
       window.open(e.detail.href, '_blank')
     })
-    view.addEventListener('link', (e: CustomEvent) => {
+    view.addEventListener('link', e => {
       const from = this.loc?.cfi
       if (from) window.setTimeout(() => this.offerBack(from), 300)
     })
+  }
+
+  /**
+   * In scrolled mode a new theme, font or size changes section heights but not the scroll offset, so the text slid
+   * away, and foliate's own anchor lags the viewport (it jumped back a chapter). Re-anchor on the passage last shown,
+   * now and once the fonts have loaded. Paged mode re-anchors itself.
+   */
+  private holdPlaceWhileFontsLoad(r: Renderer) {
+    const range = this.loc?.range
+    if (!r.scrolled || !range || range.collapsed) return
+    const hold = () => { if (this.foliate?.renderer === r && r.scrolled && range.startContainer.isConnected) void r.scrollToAnchor?.(range) }
+    hold()
+    void Promise.all(r.getContents().map(c => c.doc.fonts?.ready)).then(() => window.requestAnimationFrame(hold))
   }
 
   private applyLook() {
@@ -256,25 +272,30 @@ export class EpubView extends FileView {
     const look = resolveLook(s, this.containerEl.doc.body.hasClass('theme-dark'))
     const obsidianFont = getComputedStyle(document.body).getPropertyValue('--font-text').trim()
     const r = this.foliate.renderer
-    r.setStyles?.(bookCss(look, obsidianFont, this.plugin.customFontUrl ?? undefined))
-    r.setAttribute('flow', s.flow)
-    r.setAttribute('gap', '6%')
-    r.setAttribute('max-inline-size', '720px')
-    r.setAttribute('max-column-count', String(look.typo.maxColumns))
+    // Every changed layout attribute makes foliate re-lay out the book, so only touch the ones that differ:
+    // a theme or font change must not reflow it eight more times (the page visibly jumped).
+    const attr = (name: string, value: string | null) => {
+      if (r.getAttribute(name) === value) return
+      if (value === null) r.removeAttribute(name)
+      else r.setAttribute(name, value)
+    }
+    const css = bookCss(look, obsidianFont, this.plugin.customFontUrl ?? undefined)
+    if (this.lastCss?.r !== r || this.lastCss.css !== css) { this.lastCss = { r, css }; r.setStyles?.(css); this.holdPlaceWhileFontsLoad(r) }
+    attr('flow', s.flow)
+    attr('gap', '6%')
+    attr('max-inline-size', '720px')
+    attr('max-column-count', String(look.typo.maxColumns))
     const narrow = this.root.clientWidth < 520
     const m = `${narrow ? Math.min(look.typo.margin, 22) : look.typo.margin}px`
-    r.setAttribute('margin-left', m); r.setAttribute('margin-right', m)
-    r.setAttribute('margin-top', narrow ? '36px' : '44px'); r.setAttribute('margin-bottom', narrow ? '40px' : '44px')
+    attr('margin-left', m); attr('margin-right', m)
+    attr('margin-top', narrow ? '36px' : '44px'); attr('margin-bottom', narrow ? '40px' : '44px')
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     // Slide = GPU transform of the page strip (steady ~9 ms frames in our benchmarks);
     // only Curl uses the View-Transitions snapshot path, which can hitch at turn start.
-    if (s.pageEffect === 'none' || reduce) { r.removeAttribute('animated'); r.removeAttribute('turn-style') }
-    else {
-      r.setAttribute('animated', '')
-      r.setAttribute('gpu-composite', '')
-      if (s.pageEffect === 'curl') r.setAttribute('turn-style', 'curl')
-      else r.removeAttribute('turn-style')
-    }
+    const still = s.pageEffect === 'none' || reduce
+    attr('animated', still ? null : '')
+    if (!still) attr('gpu-composite', '')
+    attr('turn-style', !still && s.pageEffect === 'curl' ? 'curl' : null)
     this.root.setCssProps({ '--octavo-bg': look.colors.bg })
     this.root.setCssProps({ '--octavo-fg': look.colors.fg })
     this.root.toggleClass('octavo-dark', look.dark)
@@ -349,9 +370,9 @@ export class EpubView extends FileView {
     if ((e.target as HTMLElement)?.closest?.('input, textarea, select, .octavo-panel')) return
     const k = e.key
     const sel = this.lastSelection
-    if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); this.foliate?.goLeft() }
-    else if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) { e.preventDefault(); this.foliate?.goRight() }
-    else if (k === ' ' && e.shiftKey) { e.preventDefault(); this.foliate?.goLeft() }
+    if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); void this.foliate?.goLeft() }
+    else if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) { e.preventDefault(); void this.foliate?.goRight() }
+    else if (k === ' ' && e.shiftKey) { e.preventDefault(); void this.foliate?.goLeft() }
     else if (k === 'Escape') { if (!this.popover.visible && !this.panel.isOpen) this.focusMode.exit(); this.popover.hide(); this.panel.close(); this.stopAutoScroll() }
     else if ((k === 'h' || k === 'H') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight') }
     else if ((k === 'n' || k === 'N') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', true) }
@@ -368,7 +389,7 @@ export class EpubView extends FileView {
     }
     this.pageEnter = now
     this.pageChars = detail.range?.toString().length ?? 0
-    this.loc = detail
+    this.loc = { ...detail, index: detail.section?.current }
     this.updateFooter()
     this.chrome.setBookmarked(this.isBookmarked())
     window.clearTimeout(this.saveTimer)
@@ -385,7 +406,7 @@ export class EpubView extends FileView {
     this.chrome.progressBar.setCssProps({ '--octavo-progress': `${(loc.fraction ?? 0) * 100}%` })
     const pages = r?.pages ?? 0, page = r?.page ?? 0
     const left = Math.max(0, pages - page - 1)
-    const sectionSize = this.book?.sections?.[loc.index]?.size ?? 0
+    const sectionSize = this.book?.sections?.[loc.index ?? -1]?.size ?? 0
     const secFrac = pages > 1 ? Math.min(1, page / Math.max(1, pages - 1)) : 0
     const chapterSecs = this.plugin.pace.estimate(sectionSize * (1 - secFrac) * 0.8)
     const bookChars = loc.location ? (loc.location.total - loc.location.current) * 1500 : 0
@@ -403,7 +424,7 @@ export class EpubView extends FileView {
   private cycleFooter() {
     const order = ['chapter', 'time', 'book'] as const
     const s = this.plugin.settings
-    const i = order.indexOf(s.footer as any)
+    const i = order.indexOf(s.footer as typeof order[number])
     s.footer = order[(i + 1) % order.length]!
     void this.plugin.saveSettings()
     this.updateFooter()
@@ -453,8 +474,8 @@ export class EpubView extends FileView {
   }
 
   private drawSection(index: number) {
-    for (const h of this.highlights.values()) if (h.anchor.cfi) void this.foliate.addAnnotation({ value: h.anchor.cfi, color: h.color, style: h.style, id: h.id })
-    for (const b of this.backlinks) if (b.subpath.type === 'cfi') void this.foliate.addAnnotation({ value: b.subpath.cfi, kind: 'backlink' })
+    for (const h of this.highlights.values()) if (h.anchor.cfi) void this.foliate!.addAnnotation({ value: h.anchor.cfi, color: h.color, style: h.style, id: h.id })
+    for (const b of this.backlinks) if (b.subpath.type === 'cfi') void this.foliate!.addAnnotation({ value: b.subpath.cfi, kind: 'backlink' })
     void index
   }
 
@@ -468,11 +489,11 @@ export class EpubView extends FileView {
       if (!m) continue
       const range = rangeFromOffsets(idx, m.start, m.end)
       if (!range) continue
-      const cfi = this.foliate.getCFI(index, range)
+      const cfi = this.foliate!.getCFI(index, range)
       const upgraded: Highlight = { ...h, anchor: { ...h.anchor, cfi } }
       this.highlights.set(h.id, { ...h, anchor: upgraded.anchor })
       if (this.file && this.note) await this.plugin.library.saveHighlight(this.file, this.note, upgraded)
-      await this.foliate.addAnnotation({ value: cfi, color: h.color, style: h.style, id: h.id })
+      await this.foliate!.addAnnotation({ value: cfi, color: h.color, style: h.style, id: h.id })
     }
   }
 
@@ -486,8 +507,8 @@ export class EpubView extends FileView {
       tags: () => void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight', false, true),
       copyLink: () => void this.copyLinkFor(sel),
       copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(), () => this.popover.hide()),
-      define: () => this.plugin.define(range.toString(), this.contextOf(range)),
-      ask: () => this.plugin.ask(range.toString(), this.contextOf(range), this.title, this.loc?.fraction ?? 0),
+      define: () => { void this.plugin.define(range.toString(), this.contextOf(range)) },
+      ask: () => { void this.plugin.ask(range.toString(), this.contextOf(range), this.title, this.loc?.fraction ?? 0) },
       summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { this.speakText(range.toString()) },
     })
@@ -504,12 +525,12 @@ export class EpubView extends FileView {
     if (h) return { ...base, text: h.anchor.quote.exact, subpath: h.anchor.cfi ? formatCfiSubpath(h.anchor.cfi, h.color) : '', label: h.label, page: pageFromLabel(h.label), color: h.color, comment: h.note }
     const sel = this.lastSelection
     if (!sel || !sel.range.toString().trim()) return null
-    return { ...base, text: sel.range.toString(), subpath: formatCfiSubpath(this.foliate.getCFI(sel.index, sel.range)), label: this.labelFor(), page: this.loc?.pageItem?.label }
+    return { ...base, text: sel.range.toString(), subpath: formatCfiSubpath(this.foliate!.getCFI(sel.index, sel.range)), label: this.labelFor(), page: this.loc?.pageItem?.label }
   }
 
   /** The section being read, as plain text, with its table-of-contents label. */
   async chapterForAi(): Promise<{ title: string; text: string } | null> {
-    const contents: any[] = this.foliate?.renderer?.getContents?.() ?? []
+    const contents = this.foliate?.renderer?.getContents?.() ?? []
     const cur = contents.find(c => c.index === this.loc?.index) ?? contents[0]
     const body: HTMLElement | undefined = cur?.doc?.body
     if (!body) return null
@@ -537,7 +558,7 @@ export class EpubView extends FileView {
 
   private async createHighlight(sel: { range: Range; index: number }, color: HighlightColor, style: 'highlight' | 'underline', withNote = false, withTags = false) {
     if (!this.file || !this.note) return
-    const cfi: string = this.foliate.getCFI(sel.index, sel.range)
+    const cfi: string = this.foliate!.getCFI(sel.index, sel.range)
     const existing = [...this.highlights.values()].find(h => h.anchor.cfi === cfi)
     const h: Highlight = existing
       ? { ...existing, color, style }
@@ -556,7 +577,7 @@ export class EpubView extends FileView {
     this.popover.hide()
     this.lastSelection = null
     this.highlights.set(h.id, { ...h, lines: [0, 0] })
-    await this.foliate.addAnnotation({ value: cfi, color: h.color, style: h.style, id: h.id })
+    await this.foliate!.addAnnotation({ value: cfi, color: h.color, style: h.style, id: h.id })
     await this.plugin.library.saveHighlight(this.file, this.note, h)
     if (!existing) this.session.highlights++
     if (this.plugin.settings.autoPaste) await this.plugin.autoPaste(h, this.file, this.note)
@@ -579,19 +600,19 @@ export class EpubView extends FileView {
     this.popover.show(rect, {
       color: c => void this.updateHighlight(h, { color: c, style: 'highlight' }),
       underline: () => void this.updateHighlight(h, { style: h.style === 'underline' ? 'highlight' : 'underline' }),
-      note: async () => {
+      note: () => void (async () => {
         const note = await new TextPromptModal(this.app, 'Note', h.note ?? '', 'Note').result()
         if (note !== null) await this.updateHighlight(h, { note: note || undefined })
-      },
-      tags: async () => {
+      })(),
+      tags: () => void (async () => {
         this.popover.hide()
         const tags = await new TagPromptModal(this.app, h.tags ?? []).result()
         if (tags !== null) await this.updateHighlight(h, { tags: tags.length ? tags : undefined })
-      },
+      })(),
       copyLink: () => void this.copyText(this.plugin.library.linkFor(this.file!, this.note!, h).replace('|↗', `|${shorten(h.anchor.quote.exact)}`)),
       copyAs: e => showCopyMenu(this.plugin, e, () => this.copySource(h), () => this.popover.hide()),
-      define: () => this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
-      ask: () => this.plugin.ask(h.anchor.quote.exact, h.anchor.quote.exact, this.title, this.loc?.fraction ?? 0),
+      define: () => { void this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact) },
+      ask: () => { void this.plugin.ask(h.anchor.quote.exact, h.anchor.quote.exact, this.title, this.loc?.fraction ?? 0) },
       speak: () => this.speakText(h.anchor.quote.exact),
       remove: () => void this.removeHighlight(h),
       openInNote: () => void this.openInNote(h),
@@ -601,15 +622,14 @@ export class EpubView extends FileView {
   /** Ctrl/Cmd-hover a highlight → Obsidian page preview of its block in the book note. */
   private hoverPreview(e: MouseEvent, doc: Document) {
     if (!(e.ctrlKey || e.metaKey) || !this.note) return
-    const ov = this.foliate?.renderer?.getContents?.().find((c: any) => c.doc === doc)?.overlayer
-    const hit = ov?.hitTest?.(e)
-    const value: string | undefined = hit?.[0]
-    if (!value) return
+    const ov = this.foliate?.renderer?.getContents?.().find(c => c.doc === doc)?.overlayer
+    const [value, hitRange] = ov?.hitTest?.(e) ?? []
+    if (!value || !hitRange) return
     const h = [...this.highlights.values()].find(x => x.anchor.cfi === value)
     const b = h ? null : this.backlinks.find(x => x.subpath.type === 'cfi' && x.subpath.cfi === value)
     const linktext = h ? `${this.note.path}#^oct-${h.id}` : b?.sourcePath
     if (!linktext) return
-    const rect = rangeRectInHost(hit[1])
+    const rect = rangeRectInHost(hitRange)
     const rr = this.root.getBoundingClientRect()
     const target = el('div', 'octavo-hover-target', this.root)
     target.setCssStyles({ left: `${rect.left - rr.left}px`, top: `${rect.top - rr.top}px`, width: `${Math.max(4, rect.width)}px`, height: `${Math.max(4, rect.height)}px` })
@@ -623,8 +643,8 @@ export class EpubView extends FileView {
     this.highlights.set(h.id, next)
     this.popover.hide()
     if (h.anchor.cfi) {
-      await this.foliate.deleteAnnotation({ value: h.anchor.cfi })
-      await this.foliate.addAnnotation({ value: h.anchor.cfi, color: next.color, style: next.style, id: h.id })
+      await this.foliate!.deleteAnnotation({ value: h.anchor.cfi })
+      await this.foliate!.addAnnotation({ value: h.anchor.cfi, color: next.color, style: next.style, id: h.id })
     }
     await this.plugin.library.saveHighlight(this.file, this.note, next)
   }
@@ -633,7 +653,7 @@ export class EpubView extends FileView {
     if (!this.note) return
     this.popover.hide()
     this.highlights.delete(h.id)
-    if (h.anchor.cfi) await this.foliate.deleteAnnotation({ value: h.anchor.cfi })
+    if (h.anchor.cfi) await this.foliate!.deleteAnnotation({ value: h.anchor.cfi })
     await this.plugin.library.deleteHighlight(this.note, h.id)
   }
 
@@ -645,7 +665,7 @@ export class EpubView extends FileView {
 
   private async copyLinkFor(sel: { range: Range; index: number }) {
     if (!this.file || !this.note) return
-    const cfi = this.foliate.getCFI(sel.index, sel.range)
+    const cfi = this.foliate!.getCFI(sel.index, sel.range)
     const link = this.app.fileManager.generateMarkdownLink(this.file, this.note.path, formatCfiSubpath(cfi), shorten(sel.range.toString())).replace(/^!/, '')
     await this.copyText(link)
     this.popover.hide()
@@ -657,12 +677,12 @@ export class EpubView extends FileView {
   }
 
   private flash(cfi: string) {
-    void this.foliate.addAnnotation({ value: `foliate-search:${cfi}` })
+    void this.foliate!.addAnnotation({ value: `foliate-search:${cfi}` })
     window.setTimeout(() => void this.foliate?.deleteAnnotation({ value: `foliate-search:${cfi}` }), 2500)
   }
 
   private offerBack(cfi: string) {
-    this.chrome.showBack('Back to where you were', () => void this.foliate.goTo(cfi))
+    this.chrome.showBack('Back to where you were', () => void this.foliate!.goTo(cfi))
     window.setTimeout(() => this.chrome.hideBack(), 15000)
   }
 
@@ -700,8 +720,8 @@ export class EpubView extends FileView {
     const here = CFI.collapse(this.loc.cfi)
     let on = false
     // read-modify-write inside processFrontMatter so concurrent views can't clobber each other
-    await this.app.fileManager.processFrontMatter(this.note, fm => {
-      const cur: string[] = Array.isArray(fm.bookmarks) ? fm.bookmarks.filter((x: unknown) => typeof x === 'string') : []
+    await this.app.fileManager.processFrontMatter(this.note, (fm: { bookmarks?: unknown }) => {
+      const cur: string[] = Array.isArray(fm.bookmarks) ? fm.bookmarks.filter((x: unknown): x is string => typeof x === 'string') : []
       on = cur.some(b => this.cfiOnPage(b))
       const next = on ? cur.filter(b => !this.cfiOnPage(b)) : [...cur, here]
       if (next.length) fm.bookmarks = next; else delete fm.bookmarks
@@ -714,9 +734,9 @@ export class EpubView extends FileView {
 
   private async toggleSpeak() {
     if (this.speaker?.active) { this.speaker.stop(); this.chrome.setSpeaking(false); return }
-    await this.foliate.initTTS('word', undefined, (range: Range) => {
+    await this.foliate!.initTTS('word', undefined, (range: Range) => {
       // highlight the spoken word and keep it on screen
-      this.foliate.renderer.scrollToAnchor?.(range, true)
+      void this.foliate!.renderer.scrollToAnchor?.(range, true)
     })
     const t = this.plugin.settings.tts
     this.speaker = t.engine === 'cloud' && this.plugin.cloud.signedIn
@@ -743,7 +763,7 @@ export class EpubView extends FileView {
       this.autoScroll = window.requestAnimationFrame(step)
     }
     this.autoScroll = window.requestAnimationFrame(step)
-    new Notice('Auto-scroll on — press Esc to stop')
+    new Notice('Auto-scroll on. Press escape to stop.')
   }
   private stopAutoScroll() { if (this.autoScroll) cancelAnimationFrame(this.autoScroll); this.autoScroll = 0 }
 
@@ -759,7 +779,7 @@ export class EpubView extends FileView {
     m.addItem(i => i.setTitle('Go to percentage…').setIcon('percent').onClick(async () => {
       const v = await new TextPromptModal(this.app, 'Go to', String(Math.round((this.loc?.fraction ?? 0) * 100)), 'Percentage (0–100)').result()
       const n = Number(v)
-      if (v !== null && Number.isFinite(n)) { const from = this.loc?.cfi; await this.foliate.goToFraction(Math.min(1, Math.max(0, n / 100))); if (from) this.offerBack(from) }
+      if (v !== null && Number.isFinite(n)) { const from = this.loc?.cfi; await this.foliate!.goToFraction(Math.min(1, Math.max(0, n / 100))); if (from) this.offerBack(from) }
     }))
     m.addSeparator()
     const status = (st: string, label: string) => m.addItem(i => i.setTitle(label).setIcon('bookmark-check').onClick(() => this.note && this.plugin.library.setProps(this.note, { status: st, ...(st === 'finished' ? { finished: moment().format('YYYY-MM-DD') } : {}) })))
@@ -778,11 +798,11 @@ export class EpubView extends FileView {
   private renderToc(body: HTMLElement) {
     const list = el('div', 'octavo-toc', body)
     const current = this.loc?.tocItem?.href
-    const add = (items: any[], depth: number) => {
+    const add = (items: TocItem[] | null | undefined, depth: number) => {
       for (const it of items ?? []) {
         const row = el('div', `octavo-toc-item depth-${Math.min(depth, 3)}`, list, (it.label ?? '').trim())
         if (it.href && it.href === current) { row.addClass('is-active'); window.setTimeout(() => row.scrollIntoView({ block: 'center' })) }
-        row.onclick = () => { const from = this.loc?.cfi; void this.foliate.goTo(it.href); this.panel.close(); if (from) this.offerBack(from) }
+        row.onclick = () => { const from = this.loc?.cfi; void this.foliate!.goTo(it.href!); this.panel.close(); if (from) this.offerBack(from) }
         if (it.subitems?.length) add(it.subitems, depth + 1)
       }
     }
@@ -793,18 +813,18 @@ export class EpubView extends FileView {
         const row = el('div', 'octavo-toc-item', body)
         setIcon(el('span', 'octavo-inline-icon', row), 'bookmark')
         el('span', '', row, `${Math.round((this.fractionOf(b) ?? 0) * 100)}%`)
-        row.onclick = () => { void this.foliate.goTo(b); this.panel.close() }
+        row.onclick = () => { void this.foliate!.goTo(b); this.panel.close() }
       }
     }
   }
 
   private fractionOf(cfi: string): number | null {
-    try { const r = this.foliate.resolveCFI?.(cfi); return r ? this.foliate.getSectionFractions?.()[r.index] ?? null : null } catch { return null }
+    try { const r = this.foliate!.resolveCFI?.(cfi); return r ? this.foliate!.getSectionFractions?.()[r.index] ?? null : null } catch { return null }
   }
 
   private renderHighlights(body: HTMLElement) {
     const bar = el('div', 'octavo-hl-filter', body)
-    const q = el('input', '', bar) as HTMLInputElement
+    const q = el('input', '', bar)
     q.type = 'search'; q.placeholder = 'Filter highlights'
     let colorFilter: HighlightColor | null = null
     const chips = el('div', 'octavo-hl-chips', bar)
@@ -833,7 +853,7 @@ export class EpubView extends FileView {
         if (h.note) el('div', 'octavo-hl-note', card, h.note)
         cardTags(card, h.tags)
         if (!h.anchor.cfi) el('div', 'octavo-hl-label', card, 'Not located yet — opens when its chapter loads')
-        card.onclick = () => { if (h.anchor.cfi) { const from = this.loc?.cfi; void this.foliate.goTo(h.anchor.cfi).then(() => this.flash(h.anchor.cfi!)); if (from) this.offerBack(from) } }
+        card.onclick = () => { if (h.anchor.cfi) { const from = this.loc?.cfi; void this.foliate!.goTo(h.anchor.cfi).then(() => this.flash(h.anchor.cfi!)); if (from) this.offerBack(from) } }
       }
     }
     q.oninput = draw
@@ -850,7 +870,7 @@ export class EpubView extends FileView {
   }
 
   private renderSearch(body: HTMLElement) {
-    const input = el('input', 'octavo-search-input', body) as HTMLInputElement
+    const input = el('input', 'octavo-search-input', body)
     input.type = 'search'; input.placeholder = 'Search this book'; input.value = this.searchState.query
     const status = el('div', 'octavo-search-status', body)
     const list = el('div', 'octavo-search-results', body)
@@ -863,19 +883,19 @@ export class EpubView extends FileView {
           el('span', '', row, it.excerpt.pre)
           el('mark', '', row, it.excerpt.match)
           el('span', '', row, it.excerpt.post)
-          row.onclick = () => { const from = this.loc?.cfi; void this.foliate.goTo(it.cfi); if (from) this.offerBack(from) }
+          row.onclick = () => { const from = this.loc?.cfi; void this.foliate!.goTo(it.cfi); if (from) this.offerBack(from) }
         }
       }
     }
     const run = async () => {
       const query = input.value.trim()
-      this.foliate.clearSearch?.()
+      this.foliate!.clearSearch?.()
       this.searchState = { query, results: [] }
       list.empty()
       if (!query) { status.setText(''); return }
       status.setText('Searching…')
       let n = 0
-      for await (const r of this.foliate.search({ query })) {
+      for await (const r of this.foliate!.search({ query })) {
         if (this.searchState.query !== query) return
         if (r === 'done') break
         if (r.subitems) { this.searchState.results.push(r); n += r.subitems.length; show(); status.setText(`${n} result${n === 1 ? '' : 's'}…`) }
@@ -889,20 +909,20 @@ export class EpubView extends FileView {
 
   /** KOReader-style Book Map: one bar per section, sized by length, with progress and highlight marks. */
   private renderMap(body: HTMLElement) {
-    const sections: any[] = (this.book?.sections ?? []).filter((s: any) => s.linear !== 'no')
+    const sections = (this.book?.sections ?? []).filter(s => s.linear !== 'no')
     const total = sections.reduce((a, s) => a + (s.size ?? 0), 0) || 1
     const map = el('div', 'octavo-map', body)
     const counts = new Map<number, number>()
     for (const h of this.highlights.values()) {
       if (!h.anchor.cfi) continue
-      try { const r = this.foliate.resolveCFI(h.anchor.cfi); counts.set(r.index, (counts.get(r.index) ?? 0) + 1) } catch { /* ignore */ }
+      try { const r = this.foliate!.resolveCFI(h.anchor.cfi); counts.set(r.index, (counts.get(r.index) ?? 0) + 1) } catch { /* ignore */ }
     }
     const toc = new Map<number, string>()
     for (const it of this.book?.toc ?? []) {
-      try { const r = this.foliate.resolveNavigation(it.href); if (r && !toc.has(r.index)) toc.set(r.index, (it.label ?? '').trim()) } catch { /* ignore */ }
+      try { const r = this.foliate!.resolveNavigation(it.href!); if (r && !toc.has(r.index)) toc.set(r.index, (it.label ?? '').trim()) } catch { /* ignore */ }
     }
     const cur = this.loc?.index ?? -1
-    this.book.sections.forEach((s: any, i: number) => {
+    this.book!.sections.forEach((s, i) => {
       if (s.linear === 'no') return
       const row = el('div', 'octavo-map-row', map)
       el('div', 'octavo-map-label', row, toc.get(i) ?? '')
@@ -912,7 +932,7 @@ export class EpubView extends FileView {
       if (i === cur) { bar.addClass('is-current'); bar.setCssProps({ '--p': `${(this.loc?.fraction ?? 0) * 100}%` }) }
       const c = counts.get(i)
       if (c) el('span', 'octavo-map-count', row, `${c}`)
-      row.onclick = () => { void this.foliate.goTo(i); this.panel.close() }
+      row.onclick = () => { void this.foliate!.goTo(i); this.panel.close() }
     })
   }
 }
@@ -921,7 +941,7 @@ function formatLang(x: unknown): string {
   if (!x) return ''
   if (typeof x === 'string') return x
   if (typeof x === 'object') return Object.values(x as Record<string, string>)[0] ?? ''
-  return String(x)
+  return (x as number).toString()
 }
 function formatAuthors(a: unknown): string | undefined {
   const arr = Array.isArray(a) ? a : a ? [a] : []

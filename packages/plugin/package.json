@@ -14,12 +14,19 @@
     "@octavo/shared": "*"
   },
   "devDependencies": {
-    "obsidian": "1.13.1",
+    "@eslint/js": "^9.39.5",
+    "@eslint/json": "^0.14.0",
+    "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.0",
-    "vitest": "^3.2.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "globals": "^17.13.0",
     "jsdom": "^26.0.0",
-    "@types/node": "^22.0.0"
+    "obsidian": "1.13.1",
+    "pdfjs-dist": "^5.3.31",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^3.2.0"
   },
   "license": "AGPL-3.0-or-later"
 }

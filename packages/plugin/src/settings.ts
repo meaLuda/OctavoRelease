@@ -29,6 +29,8 @@ export const DEFAULT_TYPOGRAPHY: Typography = {
 }
 
 export interface OctavoSettings {
+  /** One-time repair of duplicate book notes (same octavo-id or book) has run. */
+  duplicatesRepaired?: boolean
   /** Mobile first-run guidance shown (see welcomeOnMobile). */
   mobileWelcomed?: boolean
   booksFolder: string
@@ -83,6 +85,8 @@ export interface OctavoSettings {
   exportHighlightTemplate: string
   library: {
     folders: string[] // empty = whole vault
+    /** "Where are your books?" was shown once (first library open); never asked again. */
+    foldersAsked?: boolean
     hidden: string[] // book paths hidden from the library
     minPdfMB: number // PDFs smaller than this are treated as documents unless they have a book note
     mode: 'grid' | 'list'
@@ -90,6 +94,8 @@ export interface OctavoSettings {
     sort: 'recent' | 'title' | 'author' | 'progress' | 'added'
     /** Saved filters shown as chips. */
     smart: SmartCollection[]
+    /** Continue reading cards dismissed with ×: book path → lastRead at dismissal (reading again brings it back) */
+    continueDismissed?: Record<string, number>
     /** Books dropped into the scanned folders appear without reopening the library. */
     watch: boolean
     /** Where downloaded Cloud books are placed. */

@@ -1,3 +1,4 @@
+import type { View } from '@octavo/foliate/view.js'
 import type { OctavoSettings } from '../settings'
 
 /**
@@ -8,7 +9,7 @@ import type { OctavoSettings } from '../settings'
 export class Speaker {
   active = false
   private utter: SpeechSynthesisUtterance | null = null
-  constructor(private foliate: any, private opts: OctavoSettings['tts'], private onEnd: () => void) {}
+  constructor(private foliate: View | null, private opts: OctavoSettings['tts'], private onEnd: () => void) {}
 
   static voice(name: string): SpeechSynthesisVoice | undefined {
     return name ? speechSynthesis.getVoices().find(v => v.name === name) : undefined
@@ -25,7 +26,7 @@ export class Speaker {
 
   start() {
     this.active = true
-    const ssml = this.foliate.tts?.start()
+    const ssml = this.foliate?.tts?.start()
     if (ssml) this.speak(ssml)
     else this.finish()
   }
@@ -47,21 +48,21 @@ export class Speaker {
       // last mark at or before the boundary
       let mark: string | undefined
       for (const m of marks) { if (m.offset <= e.charIndex) mark = m.name; else break }
-      if (mark !== undefined) this.foliate.tts?.setMark(mark)
+      if (mark !== undefined) this.foliate?.tts?.setMark(mark)
     }
-    u.onend = () => { if (this.active) this.advance() }
+    u.onend = () => { if (this.active) void this.advance() }
     u.onerror = () => this.finish()
     this.utter = u
     speechSynthesis.speak(u)
   }
 
   private async advance(): Promise<void> {
-    const next = this.foliate.tts?.next()
+    const next = this.foliate?.tts?.next()
     if (next) return this.speak(next)
     // end of section → turn to the next section and continue
-    const before = this.foliate.renderer?.primaryIndex
-    await this.foliate.renderer?.nextSection?.()
-    if (!this.active || this.foliate.renderer?.primaryIndex === before) return this.finish()
+    const before = this.foliate?.renderer.primaryIndex
+    await this.foliate?.renderer.nextSection?.()
+    if (!this.active || !this.foliate || this.foliate.renderer.primaryIndex === before) return this.finish()
     this.foliate.tts = null
     await this.foliate.initTTS('word')
     this.start()
@@ -100,12 +101,12 @@ export class CloudSpeaker {
   private audio = new Audio()
   private cancel = { cancelled: false }
   private next: { ssml: string; url: Promise<string> } | null = null
-  constructor(private foliate: any, private fetchUrl: (text: string, signal: { cancelled: boolean }) => Promise<string>, private rate: number, private onEnd: () => void, private onError: (e: Error) => void) {}
+  constructor(private foliate: View | null, private fetchUrl: (text: string, signal: { cancelled: boolean }) => Promise<string>, private rate: number, private onEnd: () => void, private onError: (e: Error) => void) {}
 
   start() {
     this.active = true
     this.cancel = { cancelled: false }
-    const ssml = this.foliate.tts?.start()
+    const ssml = this.foliate?.tts?.start()
     if (ssml) void this.play(ssml)
     else this.finish()
   }
@@ -118,7 +119,7 @@ export class CloudSpeaker {
   }
 
   private prefetch() {
-    const ssml = this.foliate.tts?.next() // advances the cursor without moving the highlight
+    const ssml = this.foliate?.tts?.next() // advances the cursor without moving the highlight
     if (!ssml) { this.next = null; return }
     // foliate advanced its cursor; remember the block so we can play it next
     const { text } = parseSsml(ssml)
@@ -141,7 +142,7 @@ export class CloudSpeaker {
         const at = (this.audio.currentTime / this.audio.duration) * text.length
         let mark: string | undefined
         for (const m of marks) { if (m.offset <= at) mark = m.name; else break }
-        if (mark !== undefined && mark !== last) { last = mark; this.foliate.tts?.setMark(mark) }
+        if (mark !== undefined && mark !== last) { last = mark; this.foliate?.tts?.setMark(mark) }
       }
       this.audio.onended = () => { if (this.active) void this.advance() }
       await this.audio.play()
@@ -152,9 +153,9 @@ export class CloudSpeaker {
 
   private async advance(): Promise<void> {
     if (this.next) { const n = this.next; this.next = null; return this.play(n.ssml, n.url) }
-    const before = this.foliate.renderer?.primaryIndex
-    await this.foliate.renderer?.nextSection?.()
-    if (!this.active || this.foliate.renderer?.primaryIndex === before) return this.finish()
+    const before = this.foliate?.renderer.primaryIndex
+    await this.foliate?.renderer.nextSection?.()
+    if (!this.active || !this.foliate || this.foliate.renderer.primaryIndex === before) return this.finish()
     this.foliate.tts = null
     await this.foliate.initTTS('word')
     this.start()

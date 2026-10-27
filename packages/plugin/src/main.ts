@@ -1,8 +1,9 @@
-import { addIcon, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type TAbstractFile } from 'obsidian'
+import { addIcon, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type App, type TAbstractFile } from 'obsidian'
 import { Pace, computeStreak, parseHighlights as parseHighlightsFresh, buildLiteratureNote, refreshLiteratureNote, resolveLiteratureNotePath, EXPORT_BOOK_ID, citekeyFrom, type Highlight, type CopyFormat, type LiteratureInput } from '@octavo/shared'
 import { upgradeLayouts } from './pdf/layout'
 import { DEFAULT_SETTINGS, type OctavoSettings } from './settings'
 import { BookLibrary, BOOK_EXTENSIONS, isBookFile } from './library/BookLibrary'
+import { propText } from './library/dedupe'
 import { EpubView, EPUB_VIEW } from './epub/EpubView'
 import { PdfView, PDF_VIEW } from './pdf/PdfView'
 import { OctavoSettingTab } from './settingsTab'
@@ -24,6 +25,9 @@ const OCTAVO_ICON = `<g fill="none" stroke="currentColor" stroke-width="8" strok
   <path d="M50 30v57"/>
 </g>
 <path d="M62 23.5V56l9-7.5 9 7.5V20.5c-6 .2-12 1.2-18 3z" fill="currentColor"/>`
+
+/** Obsidian's private view registry: which view type opens each file extension. */
+const viewRegistry = (app: App) => (app as App & { viewRegistry?: { typeByExtension?: Record<string, string> } }).viewRegistry
 
 export default class OctavoPlugin extends Plugin {
   declare settings: OctavoSettings
@@ -57,7 +61,7 @@ export default class OctavoPlugin extends Plugin {
 
     this.registerHoverLinkSource('octavo', { display: 'Octavo', defaultMod: true })
     this.applyPdfRouting()
-    this.register(() => { const reg = (this.app as any).viewRegistry; if (reg?.typeByExtension?.pdf === PDF_VIEW) reg.typeByExtension.pdf = this.pdfDefaultType })
+    this.register(() => { const reg = viewRegistry(this.app); if (reg?.typeByExtension?.pdf === PDF_VIEW) reg.typeByExtension.pdf = this.pdfDefaultType })
     registerShelf(this)
     // PDF region embeds (`![[x.pdf#page=N&rect=…]]`) and PDF page hover previews in notes
     this.pdfEmbeds = new PdfNoteEmbeds(this)
@@ -70,6 +74,7 @@ export default class OctavoPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       this.library.reindex()
+      this.afterMetadataResolved(() => { if (!this.settings.duplicatesRepaired) void this.repairDuplicateNotes(true) })
       void this.loadCustomFont()
       this.updateStatus()
       void this.welcomeOnMobile()
@@ -91,7 +96,7 @@ export default class OctavoPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const data = (await this.loadData()) ?? {}
+    const data = ((await this.loadData()) ?? {}) as Partial<OctavoSettings>
     const d = DEFAULT_SETTINGS
     this.settings = {
       ...d, ...data,
@@ -132,7 +137,7 @@ export default class OctavoPlugin extends Plugin {
    * plugin unloads). Links keep their eState, so PDF++ `#page=…&selection=…` works.
    */
   applyPdfRouting() {
-    const reg = (this.app as any).viewRegistry
+    const reg = viewRegistry(this.app)
     if (!reg?.typeByExtension) return
     if (this.settings.openPdfInOctavo) {
       if (reg.typeByExtension.pdf !== PDF_VIEW) { this.pdfDefaultType = reg.typeByExtension.pdf ?? 'pdf'; reg.typeByExtension.pdf = PDF_VIEW }
@@ -152,7 +157,8 @@ export default class OctavoPlugin extends Plugin {
   private registerCommands() {
     this.addCommand({ id: 'open-library', name: 'Open library', icon: 'library', callback: () => void this.openLibrary() })
     this.addCommand({ id: 'copy-diagnostics', name: 'Copy mobile diagnostics', icon: 'stethoscope', callback: () => void this.copyDiagnostics() })
-    this.addCommand({ id: 'open-library-base', name: 'Open library as a Base (table / custom views)', callback: () => void this.openLibraryBase() })
+    this.addCommand({ id: 'repair-duplicate-notes', name: 'Repair duplicate book notes', icon: 'copy-check', callback: () => void this.repairDuplicateNotes(false) })
+    this.addCommand({ id: 'open-library-base', name: 'Open library as a base (table / custom views)', callback: () => void this.openLibraryBase() })
     this.addCommand({ id: 'import-highlights', name: 'Import highlights from another reader…', callback: () => new ImportModal(this.app, this).open() })
     this.addCommand({
       id: 'open-current-file', name: 'Open current file as a book',
@@ -185,7 +191,7 @@ export default class OctavoPlugin extends Plugin {
     this.addCommand({
       id: 'focus-mode', name: 'Toggle focus mode (full screen reading)',
       checkCallback: checking => {
-        const v: any = this.app.workspace.getActiveViewOfType(EpubView) ?? this.app.workspace.getActiveViewOfType(PdfView)
+        const v = this.app.workspace.getActiveViewOfType(EpubView) ?? this.app.workspace.getActiveViewOfType(PdfView)
         if (!v) return false
         if (!checking) v.focusMode.toggle()
         return true
@@ -259,8 +265,8 @@ export default class OctavoPlugin extends Plugin {
     const note = this.library.noteFor(book)
     if (!note) { new Notice('Octavo: open this book once so it has a book note, then export.'); return null }
     const props = this.library.getProps(note)
-    const title = String(props.title ?? book.basename)
-    const bookId = props['octavo-id'] ? String(props['octavo-id']) : book.path
+    const title = propText(props.title ?? book.basename)
+    const bookId = props['octavo-id'] ? propText(props['octavo-id']) : book.path
     const citekey = citekeyFrom(props)
     // Who owns an existing note at a path: its stored book id, else (older exports) the book its `source` links to.
     const ownerAt = (p: string): string | null | undefined => {
@@ -273,14 +279,14 @@ export default class OctavoPlugin extends Plugin {
       if (!target || target.path === book.path) return null
       const tNote = this.library.noteFor(target)
       const tId = tNote ? this.library.getProps(tNote)['octavo-id'] : undefined
-      return tId ? String(tId) : target.path
+      return tId ? propText(tId) : target.path
     }
     const path = normalizePath(resolveLiteratureNotePath(this.settings.exportFolder || 'Books', title, bookId, ownerAt, citekey))
     const highlights = parseHighlightsFresh(await this.app.vault.read(note))
     const input: LiteratureInput = {
       book: title,
       bookId,
-      author: Array.isArray(props.author) ? props.author.join(', ') : props.author ? String(props.author) : undefined,
+      author: Array.isArray(props.author) ? props.author.join(', ') : props.author ? propText(props.author) : undefined,
       citekey,
       source: this.app.fileManager.generateMarkdownLink(book, path).replace(/^!/, ''),
       highlights: highlights.map(h => ({ highlight: h, link: this.library.linkFrom(book, path, h) })),
@@ -312,6 +318,32 @@ export default class OctavoPlugin extends Plugin {
     new Notice('Octavo: find your library in the ribbon menu (bottom right) or the command palette. Tap any EPUB or PDF to read it.', 12000)
   }
 
+  /** Runs `fn` once the metadata cache has indexed the vault (first 'resolved', or after 5 s at the latest). */
+  private afterMetadataResolved(fn: () => void) {
+    let done = false
+    const run = () => { if (done) return; done = true; this.app.metadataCache.offref(ref); window.clearTimeout(timer); fn() }
+    const ref = this.app.metadataCache.on('resolved', run)
+    this.registerEvent(ref)
+    const timer = window.setTimeout(run, 5000)
+  }
+
+  /** Merge book notes that belong to one book (see BookLibrary.repairDuplicates). `startup`: one-time run, silent when clean. */
+  async repairDuplicateNotes(startup: boolean) {
+    try {
+      const r = await this.library.repairDuplicates()
+      if (r.removed) {
+        new Notice(`Octavo: merged ${r.removed} duplicate book note${r.removed === 1 ? '' : 's'} into ${r.groups} (${r.highlights} highlight${r.highlights === 1 ? '' : 's'} moved, ${r.links} link${r.links === 1 ? '' : 's'} updated). Duplicates are in the system trash.`, 10000)
+      } else if (!startup) new Notice('Octavo: no duplicate book notes found')
+      this.settings.duplicatesRepaired = true
+      await this.saveSettings()
+      return r
+    } catch (e) {
+      console.error('Octavo: repairing duplicate book notes failed', e)
+      new Notice('Octavo: could not repair duplicate book notes (see console)')
+      return null
+    }
+  }
+
   private async copyDiagnostics() {
     const report = await collectDiagnostics(this.app, this.manifest.version)
     try { await navigator.clipboard.writeText(report); new Notice('Octavo diagnostics copied to the clipboard') } catch { /* shown below */ }
@@ -321,7 +353,7 @@ export default class OctavoPlugin extends Plugin {
   async openLibrary() {
     const existing = this.app.workspace.getLeavesOfType(LIBRARY_VIEW)[0]
     if (existing) {
-      await (existing as any).loadIfDeferred?.()
+      await (existing as WorkspaceLeaf & { loadIfDeferred?(): Promise<void> }).loadIfDeferred?.()
       if (!existing.view.containerEl.querySelector('.octavo-lib')) await existing.setViewState({ type: LIBRARY_VIEW, active: true })
       await this.app.workspace.revealLeaf(existing)
       return
@@ -385,8 +417,9 @@ export default class OctavoPlugin extends Plugin {
         footer = r.footer
       } else {
         const res = await requestUrl({ url: `https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(word.toLowerCase())}`, throw: false })
-        const en = res.status === 200 ? (res.json?.en ?? []) : []
-        defn = en.slice(0, 2).map((p: any) => `*${p.partOfSpeech}* — ${(p.definitions?.[0]?.definition ?? '').replace(/<[^>]+>/g, '')}`).join('\n\n')
+        type Sense = { partOfSpeech: string; definitions?: Array<{ definition?: string }> }
+        const en = res.status === 200 ? ((res.json as { en?: Sense[] } | null)?.en ?? []) : []
+        defn = en.slice(0, 2).map(p => `*${p.partOfSpeech}* — ${(p.definitions?.[0]?.definition ?? '').replace(/<[^>]+>/g, '')}`).join('\n\n')
       }
     } catch (e) { if (this.hostedAi) { modal.setMarkdown(this.aiError(e)); return } defn = '' }
     modal.setMarkdown(defn ? `${defn}${footer ? `\n\n${footer}` : ''}` : `No definition found for **${word}**. Set up an AI provider in settings for context-aware definitions.`)
@@ -556,7 +589,7 @@ export default class OctavoPlugin extends Plugin {
   async yearInReview() {
     const year = moment().format('YYYY')
     const books = this.library.allBooks().map(b => ({ ...b, p: this.library.getProps(b.note) }))
-    const finished = books.filter(b => b.p.status === 'finished' && String(b.p.finished ?? '').startsWith(year))
+    const finished = books.filter(b => b.p.status === 'finished' && propText(b.p.finished ?? '').startsWith(year))
     const minutes = Object.entries(this.settings.stats.minutesByDay).filter(([d]) => d.startsWith(year)).reduce((a, [, m]) => a + m, 0)
     const byMonth = new Map<string, number>()
     for (const [d, m] of Object.entries(this.settings.stats.minutesByDay)) if (d.startsWith(year)) byMonth.set(d.slice(5, 7), (byMonth.get(d.slice(5, 7)) ?? 0) + m)
@@ -564,7 +597,7 @@ export default class OctavoPlugin extends Plugin {
     const lines = [
       `# ${year} in reading`, '',
       `- **${finished.length}** books finished`, `- **${Math.round(minutes / 60)}** hours read`, `- **${highlights}** highlights kept`, '',
-      '## Finished', ...finished.map(b => `- ${this.app.fileManager.generateMarkdownLink(b.note, '')}${b.p.author ? ` — ${b.p.author}` : ''}`), '',
+      '## Finished', ...finished.map(b => `- ${this.app.fileManager.generateMarkdownLink(b.note, '')}${b.p.author ? ` — ${propText(b.p.author)}` : ''}`), '',
       '## Month by month', ...[...byMonth.entries()].sort().map(([m, v]) => `- ${moment(m, 'MM').format('MMMM')}: ${Math.round(v / 60 * 10) / 10} h`), '',
     ]
     const path = normalizePath(`${this.settings.booksFolder || 'Books'}/Year in review ${year}.md`)

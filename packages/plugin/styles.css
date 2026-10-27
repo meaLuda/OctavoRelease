@@ -576,3 +576,11 @@ body.is-phone:not(.octavo-immersive) .octavo-tts-bar { bottom: calc(var(--navbar
 
 /* Appearance panel: small explanatory line under a row */
 .octavo-ap-note { font-size: var(--font-ui-smaller); color: var(--text-muted); margin: -4px 0 8px; }
+
+/* "Where are your books?" folder picker */
+.octavo-folder-pick-list { max-height: 50vh; overflow-y: auto; border-top: 1px solid var(--background-modifier-border); border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 8px; }
+
+/* Continue reading: dismiss a card */
+.octavo-lib-hero { position: relative; }
+.octavo-lib-hero-close { position: absolute; top: 8px; right: 8px; opacity: 0; transition: opacity .15s; }
+.octavo-lib-hero:hover .octavo-lib-hero-close, .octavo-lib-hero:focus-within .octavo-lib-hero-close, .is-mobile .octavo-lib-hero-close { opacity: 1; }

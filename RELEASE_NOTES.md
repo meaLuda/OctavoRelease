@@ -1,4 +1,13 @@
-Octavo Reader 1.1.0 beta 9
+Octavo Reader 1.1.0 beta 10
+
+New in beta 10
+- Your place stays put when you change theme, font, size or spacing, in books and PDFs (scrolled and paged).
+- Library folder: Octavo asks once where your books live (Books by default) and lists only that folder; change it any time in Settings, Library.
+- Continue reading cards can be dismissed with the ×.
+- Duplicate book notes are found and merged into one (Command: Repair duplicate book notes; also runs once at startup). Extra copies go to the trash, never deleted.
+- Chapter time left, the book map and AI chapter tools know which chapter you are in again.
+- PDF region embeds and hover previews render again in notes and popovers.
+- Cleaner code for Obsidian's plugin review (about 1,250 lint warnings fixed).
 
 New in beta 9
 - PDF auto-scroll: the page glides down at your speed; in page-turn mode it reads down the page, pauses, and turns. Space pauses, Esc stops.

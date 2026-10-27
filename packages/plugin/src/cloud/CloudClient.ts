@@ -9,6 +9,7 @@ import { TypeToConfirmModal } from '../reader/modals'
 import { exportPath, planLine, planName, usageLine, usageMeters, type Me } from './account'
 import { hostedRequest, type AiFeature, type AiInput, type HostedReply } from '../ai/hosted'
 import { cloudLabelsKey, groupByCollection, labelsKey, mergeCloudLabels, noteLabels } from '../library/organise'
+import { destructive } from '../platform'
 
 export type CheckoutPlan = 'cloud_monthly' | 'cloud_yearly' | 'cloud_ai_monthly' | 'cloud_ai_yearly' | 'founder'
 
@@ -36,7 +37,7 @@ export class CloudClient {
   get s() { return this.plugin.settings.cloud }
   get signedIn() { return !!this.s.token }
 
-  private async api<T = any>(path: string, init: Partial<RequestUrlParam> = {}): Promise<T> {
+  private async api<T = unknown>(path: string, init: Partial<RequestUrlParam> = {}): Promise<T> {
     const res = await requestUrl({
       url: `${this.s.apiBase.replace(/\/$/, '')}${path}`,
       method: init.method ?? 'GET',
@@ -45,7 +46,7 @@ export class CloudClient {
       throw: false,
     })
     if (res.status === 401) { this.s.token = ''; await this.plugin.saveSettings(); throw new Error('Signed out — please sign in again') }
-    if (res.status >= 400) throw new Error(res.json?.error ?? `HTTP ${res.status}`)
+    if (res.status >= 400) throw new Error((res.json as { error?: string } | null)?.error ?? `HTTP ${res.status}`)
     return res.json as T
   }
 
@@ -149,7 +150,7 @@ export class CloudClient {
   }
 
   private requireCloud(): boolean {
-    if (!this.signedIn) { new Notice('Sign in to Octavo Cloud first (Settings → Octavo).'); return false }
+    if (!this.signedIn) { new Notice('Sign in to Octavo Cloud first, in Octavo Reader settings.'); return false }
     if (!hasCloud(this.ent?.tier)) { new Notice('This needs an Octavo Cloud plan.'); return false }
     return true
   }
@@ -328,7 +329,7 @@ export class CloudClient {
     new Setting(c).setName('Sign out everywhere').setDesc('Ends every Octavo Cloud session on all your devices, including this one.')
       .addButton(b => b.setButtonText('Sign out everywhere').onClick(async () => { try { await this.signOutEverywhere(); redraw() } catch (e) { fail(e) } }))
     new Setting(c).setName('Delete account').setDesc('Permanently delete your Octavo Cloud account and cloud library. Your vault is not touched.')
-      .addButton(b => b.setButtonText('Delete account').setWarning().onClick(async () => { try { if (await this.deleteAccount()) redraw() } catch (e) { fail(e) } }))
+      .addButton(b => destructive(b.setButtonText('Delete account')).onClick(async () => { try { if (await this.deleteAccount()) redraw() } catch (e) { fail(e) } }))
     new Setting(c).setName('Server').addText(t => t.setValue(this.s.apiBase).onChange(v => { this.s.apiBase = v.trim(); void this.plugin.saveSettings() }))
   }
 
@@ -368,7 +369,7 @@ export class CloudClient {
         .addButton(b => b.setButtonText('Notify me').onClick(() => this.notifyAi().catch(fail)))
       return
     }
-    new Setting(el).setName('Cloud + AI').setDesc('Everything in Cloud, plus Octavo AI: explain and ask about passages, summaries, chapter notes and flashcards. No API key needed.')
+    new Setting(el).setName('Cloud + AI').setDesc('Everything in Octavo Cloud, plus Octavo AI: explain and ask about passages, summaries, chapter notes and flashcards. No API key needed.')
       .addButton(b => b.setButtonText('Yearly').setCta().onClick(() => this.checkout('cloud_ai_yearly').catch(fail)))
       .addButton(b => b.setButtonText('Monthly').onClick(() => this.checkout('cloud_ai_monthly').catch(fail)))
   }

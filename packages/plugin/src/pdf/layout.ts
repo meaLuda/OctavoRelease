@@ -36,7 +36,7 @@ export function resolveLayout(saved: PdfBookLayout | undefined, defaults: { crop
 export function pruneLayouts(map: Record<string, PdfBookLayout>, max = 300): Record<string, PdfBookLayout> {
   const keys = Object.keys(map)
   if (keys.length <= max) return map
-  return Object.fromEntries(keys.sort((a, b) => (map[b]!.t ?? 0) - (map[a]!.t ?? 0)).slice(0, max).map(k => [k, map[k]!]))
+  return Object.fromEntries(keys.sort((a, b) => (map[b].t ?? 0) - (map[a].t ?? 0)).slice(0, max).map(k => [k, map[k]]))
 }
 
 /**
@@ -67,22 +67,22 @@ export const useSpread = (l: ResolvedLayout, phone: boolean) => l.spread === 'tw
 export function inkBox(img: { data: ArrayLike<number>; width: number; height: number }, threshold = 60, minRun = 1): Box | null {
   const { data, width: w, height: h } = img
   if (!w || !h) return null
-  const px = (x: number, y: number) => { const i = (y * w + x) * 4; return [data[i]!, data[i + 1]!, data[i + 2]!] as const }
+  const px = (x: number, y: number) => { const i = (y * w + x) * 4; return [data[i], data[i + 1], data[i + 2]] as const }
   const corners = [px(0, 0), px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1)]
   // paper = the most common corner colour (a corner may hold a page-number or a bleed image)
-  const near = (a: readonly number[], b: readonly number[]) => Math.abs(a[0]! - b[0]!) + Math.abs(a[1]! - b[1]!) + Math.abs(a[2]! - b[2]!) <= threshold
-  const bg = corners.map(c => ({ c, n: corners.filter(d => near(c, d)).length })).sort((a, b) => b.n - a.n)[0]!.c
+  const near = (a: readonly number[], b: readonly number[]) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) <= threshold
+  const bg = corners.map(c => ({ c, n: corners.filter(d => near(c, d)).length })).sort((a, b) => b.n - a.n)[0].c
   const cols = new Uint32Array(w), rows = new Uint32Array(h)
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = (y * w + x) * 4
-    if (Math.abs(data[i]! - bg[0]) + Math.abs(data[i + 1]! - bg[1]) + Math.abs(data[i + 2]! - bg[2]) > threshold) { cols[x]!++; rows[y]!++ }
+    if (Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2]) > threshold) { cols[x]++; rows[y]++ }
   }
   let x0 = 0, x1 = w - 1, y0 = 0, y1 = h - 1
-  while (x0 < w && cols[x0]! < minRun) x0++
+  while (x0 < w && cols[x0] < minRun) x0++
   if (x0 >= w) return null
-  while (x1 > x0 && cols[x1]! < minRun) x1--
-  while (y0 < h && rows[y0]! < minRun) y0++
-  while (y1 > y0 && rows[y1]! < minRun) y1--
+  while (x1 > x0 && cols[x1] < minRun) x1--
+  while (y0 < h && rows[y0] < minRun) y0++
+  while (y1 > y0 && rows[y1] < minRun) y1--
   return { x0: x0 / w, y0: y0 / h, x1: (x1 + 1) / w, y1: (y1 + 1) / h }
 }
 
@@ -152,14 +152,14 @@ export function columnAt(rects: Array<{ left: number; right: number; top: number
   const lines: Array<typeof near> = []
   for (const r of near) {
     const cy = (r.top + r.bottom) / 2, h = r.bottom - r.top
-    const line = lines.find(l => Math.abs((l[0]!.top + l[0]!.bottom) / 2 - cy) < Math.min(h, l[0]!.bottom - l[0]!.top) * 0.5)
+    const line = lines.find(l => Math.abs((l[0].top + l[0].bottom) / 2 - cy) < Math.min(h, l[0].bottom - l[0].top) * 0.5)
     if (line) line.push(r); else lines.push([r])
   }
   const hits: Array<{ left: number; right: number }> = []
   for (const l of lines) {
     l.sort((a, b) => a.left - b.left)
-    const h = l[0]!.bottom - l[0]!.top
-    let seg = { left: l[0]!.left, right: l[0]!.right }
+    const h = l[0].bottom - l[0].top
+    let seg = { left: l[0].left, right: l[0].right }
     const segs = [seg]
     for (const r of l.slice(1)) {
       if (r.left - seg.right > h * 1.5) { seg = { left: r.left, right: r.right }; segs.push(seg) } else seg.right = Math.max(seg.right, r.right)
@@ -170,7 +170,7 @@ export function columnAt(rects: Array<{ left: number; right: number; top: number
   if (!hits.length) return null
   // ignore unusually wide segments (a heading spanning both columns)
   const ws = hits.map(r => r.right - r.left).sort((a, b) => a - b)
-  const med = ws[Math.floor(ws.length / 2)]!
+  const med = ws[Math.floor(ws.length / 2)]
   const keep = hits.filter(r => r.right - r.left <= med * 1.6)
   return { left: Math.min(...keep.map(r => r.left)), right: Math.max(...keep.map(r => r.right)) }
 }
@@ -187,7 +187,7 @@ export function joinCopiedLines(text: string): string {
   lines.forEach((line, i) => {
     const t = line.trim()
     if (i === 0) { out = t; return }
-    const prev = lines[i - 1]!.trim()
+    const prev = lines[i - 1].trim()
     if (!t) { if (!out.endsWith('\n\n')) out += '\n\n'; return }
     if (!prev) { out += t; return }
     const ends = /[.!?:;"”’)]$/.test(prev) && prev.length < longest * 0.85

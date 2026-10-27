@@ -85,9 +85,11 @@ export const BYO_PROMPTS = {
 export function parseCards(raw: string): Card[] {
   const text = raw.replace(/```(?:json)?/gi, '').trim()
   const tryParse = (s: string): unknown => { try { return JSON.parse(s) } catch { try { return JSON.parse(s.replace(/,\s*([}\]])/g, '$1')) } catch { return undefined } } }
-  const fromValue = (v: any): Card[] | null => {
-    const list = Array.isArray(v) ? v : Array.isArray(v?.cards) ? v.cards : null
-    return list ? cleanCards(list.map((c: any) => ({ q: c?.q ?? c?.question, a: c?.a ?? c?.answer }))) : null
+  type RawCard = { q?: unknown; question?: unknown; a?: unknown; answer?: unknown } | null | undefined
+  const fromValue = (v: unknown): Card[] | null => {
+    const cards = (v as { cards?: unknown } | null | undefined)?.cards
+    const list = (Array.isArray(v) ? v : Array.isArray(cards) ? cards : null) as RawCard[] | null
+    return list ? cleanCards(list.map(c => ({ q: c?.q ?? c?.question, a: c?.a ?? c?.answer }))) : null
   }
   const start = text.search(/[[{]/)
   if (start >= 0) {
@@ -101,10 +103,10 @@ export function parseCards(raw: string): Card[] {
   let q = ''
   for (const line of text.split('\n')) {
     const qa = /^\s*(?:[-*\d.)]+\s*)?(.+?)\s*::\s*(.+)$/.exec(line)
-    if (qa) { out.push({ q: qa[1]!, a: qa[2]! }); continue }
+    if (qa) { out.push({ q: qa[1], a: qa[2] }); continue }
     const qm = /^\s*(?:[-*\d.)]+\s*)?(?:Q|Question)\s*[:.]\s*(.+)$/i.exec(line), am = /^\s*(?:A|Answer)\s*[:.]\s*(.+)$/i.exec(line)
     if (qm) q = qm[1]!
-    else if (am && q) { out.push({ q, a: am[1]! }); q = '' }
+    else if (am && q) { out.push({ q, a: am[1] }); q = '' }
   }
   return cleanCards(out)
 }
@@ -134,11 +136,11 @@ export const cardLine = (c: Card) => `${c.q.replace(/\s+/g, ' ').replace(/::+/g,
 
 /** Lines to append for cards whose question isn't already in the file. */
 export function newCardLines(cards: Card[], existing: string): string[] {
-  const have = new Set(existing.split('\n').map(l => l.split('::')[0]!.trim().toLowerCase()).filter(Boolean))
+  const have = new Set(existing.split('\n').map(l => l.split('::')[0].trim().toLowerCase()).filter(Boolean))
   const out: string[] = []
   for (const c of cards) {
     const line = cardLine(c)
-    const q = line.split('::')[0]!.toLowerCase()
+    const q = line.split('::')[0].toLowerCase()
     if (have.has(q)) continue
     have.add(q)
     out.push(line)

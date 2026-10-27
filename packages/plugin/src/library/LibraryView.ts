@@ -1,20 +1,26 @@
 import { ItemView, Menu, Notice, TFile, WorkspaceLeaf, moment, normalizePath, setIcon, loadPdfJs, debounce } from 'obsidian'
 import { besideLeaf, canPopout } from '../platform'
 import { cleanBookName, isJunkTitle, normalizeAuthors, tidyTitle } from '@octavo/shared'
-import { makeBook } from '@octavo/foliate/view.js'
+import { makeBook, type Book } from '@octavo/foliate/view.js'
 import type OctavoPlugin from '../main'
 import { BOOK_EXTENSIONS } from './BookLibrary'
 import { metaCache, metaKey } from './metaCache'
 import { CollectionModal, TextPromptModal } from '../reader/modals'
 import { parseStub, STUB_MAX } from '../cloud/stub'
 import { openPdfDocument } from '../pdf/source'
+import type { PdfjsLibModule } from '../pdf/pdfjs'
+import { propText } from './dedupe'
 import {
   FACETS, FACET_LABEL, collectionEdit, describeFilter, emptyFilter, facetCount, facetValues, isEmptyFilter, makeSmartCollection,
   matchesFilter, normalizeFilter, renameCollectionInSmart, seriesOf, tagsOf, toggleFacet, type Facet, type LibFilter,
 } from './organise'
 import { ConfirmModal, FacetSuggestModal, onContextOrLongPress } from './filterUi'
+import { FolderPickModal } from './FolderPickModal'
 
 export const LIBRARY_VIEW = 'octavo-library'
+
+/** A cover placeholder remembers its book until the cover is extracted. */
+type ItemEl = Element & { __item?: BookItem }
 
 type Shelf = 'all' | 'reading' | 'want' | 'finished' | 'new' | `c:${string}` | `s:${string}`
 
@@ -70,12 +76,13 @@ export class LibraryView extends ItemView {
     this.registerEvent(this.app.metadataCache.on('changed', f => { if (this.plugin.library.bookForNote(f)) this.refreshSoon() }))
     // Watch folders: books dropped (or moved) into the scanned folders appear without reopening the library.
     // A copy can arrive empty and grow, so a book file's first 'modify' also counts (PDF size threshold).
-    const watched = (f: unknown) => this.plugin.settings.library.watch && f instanceof TFile && this.isBookExt(f)
-    this.registerEvent(this.app.vault.on('create', f => { if (watched(f) && this.isCandidate(f as TFile)) this.refreshSoon() }))
-    this.registerEvent(this.app.vault.on('modify', f => { if (watched(f) && !this.items.some(i => i.file === f) && this.isCandidate(f as TFile)) this.refreshSoon() }))
+    const watched = (f: unknown): f is TFile => this.plugin.settings.library.watch && f instanceof TFile && this.isBookExt(f)
+    this.registerEvent(this.app.vault.on('create', f => { if (watched(f) && this.isCandidate(f)) this.refreshSoon() }))
+    this.registerEvent(this.app.vault.on('modify', f => { if (watched(f) && !this.items.some(i => i.file === f) && this.isCandidate(f)) this.refreshSoon() }))
     this.registerEvent(this.app.vault.on('delete', () => this.refreshSoon()))
     this.registerEvent(this.app.vault.on('rename', () => this.refreshSoon()))
     this.refresh()
+    FolderPickModal.maybeAsk(this.plugin, () => this.refresh())
   }
 
   async onClose() {
@@ -111,11 +118,11 @@ export class LibraryView extends ItemView {
       const fm = note ? this.plugin.library.getProps(note) : {}
       const clean = cleanBookName(f.name)
       const coverFile = note ? this.linkTarget(fm.cover, note.path) : null
-      const status = (['reading', 'want', 'finished', 'abandoned'].includes(fm.status) ? fm.status : note ? 'reading' : 'new') as BookItem['status']
-      const lastRead = fm['last-read'] ? moment(String(fm['last-read'])).valueOf() : 0
+      const status = (typeof fm.status === 'string' && ['reading', 'want', 'finished', 'abandoned'].includes(fm.status) ? fm.status : note ? 'reading' : 'new') as BookItem['status']
+      const lastRead = fm['last-read'] ? moment(propText(fm['last-read'])).valueOf() : 0
       out.push({
         file: f, note, path: f.path,
-        title: String(fm.title ?? clean.title),
+        title: propText(fm.title ?? clean.title),
         author: normalizeAuthors(fm.author) ?? clean.author,
         status: status === 'reading' && !(Number(fm.progress) > 0) && !lastRead ? 'new' : status,
         progress: Number(fm.progress) || 0,
@@ -136,7 +143,7 @@ export class LibraryView extends ItemView {
   private linkTarget(v: unknown, source: string): TFile | null {
     if (typeof v !== 'string') return null
     const m = /\[\[([^\]|#]+)/.exec(v)
-    return this.app.metadataCache.getFirstLinkpathDest(m ? m[1]! : v, source)
+    return this.app.metadataCache.getFirstLinkpathDest(m ? m[1] : v, source)
   }
 
   refresh() {
@@ -151,7 +158,7 @@ export class LibraryView extends ItemView {
     const lib = this.plugin.settings.library
     root.empty()
     this.io?.disconnect()
-    this.io = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { this.io?.unobserve(e.target); this.enqueue((e.target as any).__item) } }, { root: this.contentEl, rootMargin: '400px' })
+    this.io = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { this.io?.unobserve(e.target); this.enqueue((e.target as ItemEl).__item) } }, { root: this.contentEl, rootMargin: '400px' })
 
     // header
     const head = root.createDiv({ cls: 'octavo-lib-head' })
@@ -174,7 +181,9 @@ export class LibraryView extends ItemView {
     add.onclick = () => void this.addBooks()
 
     // continue reading
-    const recent = this.items.filter(i => i.status === 'reading' && i.lastRead).sort((a, b) => b.lastRead - a.lastRead).slice(0, 3)
+    // a book dismissed with × stays out of Continue reading until it is read again
+    const dismissed = this.plugin.settings.library.continueDismissed ?? {}
+    const recent = this.items.filter(i => i.status === 'reading' && i.lastRead && !(dismissed[i.file.path] >= i.lastRead)).sort((a, b) => b.lastRead - a.lastRead).slice(0, 3)
     if (recent.length && !this.query) {
       const cont = root.createDiv({ cls: 'octavo-lib-continue' })
       cont.createDiv({ cls: 'octavo-lib-section', text: 'Continue reading' })
@@ -189,6 +198,15 @@ export class LibraryView extends ItemView {
         info.createDiv({ cls: 'octavo-lib-hero-meta', text: `${Math.round(it.progress * 100)}% · ${moment(it.lastRead).fromNow()}` })
         const resume = info.createEl('button', { cls: 'mod-cta', text: 'Resume' })
         resume.onclick = e => { e.stopPropagation(); this.openBook(it, false) }
+        const x = card.createEl('button', { cls: 'clickable-icon octavo-lib-hero-close', attr: { 'aria-label': 'Remove from continue reading' } })
+        setIcon(x, 'x')
+        x.onclick = async e => {
+          e.stopPropagation()
+          const lib = this.plugin.settings.library
+          lib.continueDismissed = { ...(lib.continueDismissed ?? {}), [it.file.path]: it.lastRead }
+          await this.plugin.saveSettings()
+          this.render()
+        }
         this.wireCard(card, it)
       }
     }
@@ -444,7 +462,7 @@ export class LibraryView extends ItemView {
     parent.setCssProps({ '--hue': String(hash(it.title) % 360) })
     parent.createDiv({ cls: 'octavo-lib-ph-title', text: it.title })
     if (it.author) parent.createDiv({ cls: 'octavo-lib-ph-author', text: it.author })
-    ;(parent as any).__item = it
+    ;(parent as ItemEl).__item = it
     if (!it.cloud) this.io?.observe(parent)
   }
 
@@ -489,12 +507,12 @@ export class LibraryView extends ItemView {
     m.addSeparator()
     if (this.plugin.cloud.signedIn && !it.cloud) m.addItem(i => i.setTitle('Move to Octavo Cloud').setIcon('cloud-upload').onClick(() => void this.plugin.cloud.uploadBook(it.file)))
     m.addItem(i => i.setTitle('Reveal in file explorer').setIcon('folder-open').onClick(() => {
-      const fe: any = this.app.workspace.getLeavesOfType('file-explorer')[0]?.view
+      const fe = this.app.workspace.getLeavesOfType('file-explorer')[0]?.view as { revealInFolder?(f: TFile): void } | undefined
       fe?.revealInFolder?.(it.file)
     }))
     m.addItem(i => i.setTitle('Hide from library').setIcon('eye-off').onClick(async () => {
       this.plugin.settings.library.hidden.push(it.file.path); await this.plugin.saveSettings(); this.refresh()
-      new Notice('Hidden. Unhide it in Settings → Octavo Reader → Library → Hidden books.')
+      new Notice('Hidden. Unhide it in the library section of Octavo Reader settings.')
     }))
     m.showAtMouseEvent(e)
   }
@@ -583,25 +601,25 @@ export class LibraryView extends ItemView {
   private async extract(it: BookItem): Promise<{ title?: string; author?: string; cover?: Blob | null }> {
     const url = this.app.vault.getResourcePath(it.file)
     if (it.format === 'pdf') {
-      const pdfjs = await loadPdfJs()
+      const pdfjs = await loadPdfJs() as PdfjsLibModule
       const doc = await openPdfDocument(pdfjs, url, it.file.stat.size, async () => new Uint8Array(await this.app.vault.readBinary(it.file)))
       try {
-        const info = (await doc.getMetadata().catch(() => null))?.info ?? {}
+        const info = ((await doc.getMetadata().catch(() => null))?.info ?? {}) as { Title?: unknown; Author?: unknown }
         const page = await doc.getPage(1)
         const v = page.getViewport({ scale: 300 / page.getViewport({ scale: 1 }).width })
         const c = createEl('canvas'); c.width = v.width; c.height = v.height
         await page.render({ canvasContext: c.getContext('2d')!, viewport: v }).promise
         const cover = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', 0.8))
-        const t = String(info.Title ?? '').trim()
-        return { title: isJunkTitle(t) ? undefined : tidyTitle(t!), author: normalizeAuthors(info.Author), cover }
+        const t = propText(info.Title ?? '').trim()
+        return { title: isJunkTitle(t) ? undefined : tidyTitle(t), author: normalizeAuthors(info.Author), cover }
       } finally { await doc.destroy() }
     }
     const blob = new Blob([await this.app.vault.readBinary(it.file)])
-    const book: any = await makeBook(new File([blob], it.file.name))
+    const book: Book & { destroy?(): void } = await makeBook(new File([blob], it.file.name))
     const md = book.metadata ?? {}
-    const title = typeof md.title === 'string' ? md.title : md.title ? Object.values(md.title)[0] as string : undefined
-    const authors = (Array.isArray(md.author) ? md.author : md.author ? [md.author] : []).map((a: any) => typeof a === 'string' ? a : (typeof a.name === 'string' ? a.name : Object.values(a.name ?? {})[0])).filter(Boolean)
-    const raw: Blob | null = await book.getCover?.().catch?.(() => null) ?? null
+    const title = typeof md.title === 'string' ? md.title : md.title ? Object.values(md.title)[0] : undefined
+    const authors = (Array.isArray(md.author) ? md.author : md.author ? [md.author] : []).map(a => typeof a === 'string' ? a : (typeof a.name === 'string' ? a.name : Object.values(a.name ?? {})[0])).filter(Boolean)
+    const raw = await book.getCover?.().catch(() => null) ?? null
     book.destroy?.()
     return { title, author: normalizeAuthors(authors), cover: raw ? await thumb(raw) : null }
   }
@@ -616,8 +634,8 @@ export class LibraryView extends ItemView {
       this.blobUrls.push(it.cover)
     }
     // update this card in place
-    for (const card of Array.from(this.contentEl.querySelectorAll('.is-placeholder')) as HTMLElement[]) {
-      if ((card as any).__item !== it) continue
+    for (const card of Array.from(this.contentEl.querySelectorAll<HTMLElement>('.is-placeholder'))) {
+      if ((card as ItemEl).__item !== it) continue
       card.empty(); card.removeClass('is-placeholder')
       if (it.cover) card.createEl('img', { attr: { src: it.cover, alt: '' } })
       const host = card.closest('.octavo-lib-card')

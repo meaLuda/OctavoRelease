@@ -29,7 +29,8 @@ export async function collectDiagnostics(app: App, version: string): Promise<str
   add('pdfjs.viewerGlobal', !!(window as unknown as { pdfjsViewer?: unknown }).pdfjsViewer)
   for (const path of ['/lib/pdfjs/pdf.viewer.min.mjs', '/lib/pdfjs/cmaps/Adobe-Japan1-UCS2.bcmap', '/lib/pdfjs/standard_fonts/FoxitSans.pfb']) {
     try {
-      const res = await fetch(path, { method: 'GET', cache: 'no-store' })
+      // probes the app's own origin, which requestUrl (Node-side, absolute URLs only) can't reach
+      const res = await activeWindow.fetch(path, { method: 'GET', cache: 'no-store' })
       add(`fetch ${path}`, res.status)
     } catch (e) { add(`fetch ${path}`, `failed: ${(e as Error).message}`) }
   }

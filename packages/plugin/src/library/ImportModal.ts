@@ -5,6 +5,7 @@ import {
 } from '@octavo/shared'
 import type OctavoPlugin from '../main'
 import { isBookFile } from './BookLibrary'
+import { propText } from './dedupe'
 
 type Source = 'annotator' | 'elton' | 'weave' | 'kindle' | 'koreader' | 'readest' | 'zotero'
 
@@ -34,7 +35,7 @@ export class ImportModal extends Modal {
 
   private pickFiles(accept: string, multiple = true): Promise<File[]> {
     return new Promise(resolve => {
-      const input = document.createElement('input')
+      const input = createEl('input')
       input.type = 'file'; input.accept = accept; input.multiple = multiple
       input.onchange = () => resolve(Array.from(input.files ?? []))
       input.click()
@@ -108,7 +109,7 @@ export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[], o
     const want = [b.title, b.bookPath ? cleanBookName(b.bookPath.split('/').pop()!).title : undefined].filter(Boolean).map(t => norm(t!))
     if (!file && want.length) {
       const score = (f: TFile) => {
-        const names = [norm(f.basename), norm(cleanBookName(f.name).title), norm(String(plugin.library.noteFor(f) ? plugin.library.getProps(plugin.library.noteFor(f)!).title ?? '' : ''))].filter(Boolean)
+        const names = [norm(f.basename), norm(cleanBookName(f.name).title), norm(propText(plugin.library.noteFor(f) ? plugin.library.getProps(plugin.library.noteFor(f)!).title ?? '' : ''))].filter(Boolean)
         let best = 0
         for (const w of want) for (const n of names) {
           if (w === n) best = Math.max(best, 3)

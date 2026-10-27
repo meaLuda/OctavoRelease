@@ -29,7 +29,7 @@ export function themeTypography(s: OctavoSettings): Typography {
 /** Night-light warmth: scale blue down by up to 18% and green by up to 5%, keeping each theme's character. */
 export function warm(hex: string, k: number): string {
   const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
-  const out = [r!, g! * (1 - 0.05 * k), b! * (1 - 0.18 * k)]
+  const out = [r, g * (1 - 0.05 * k), b * (1 - 0.18 * k)]
   return '#' + out.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('')
 }
 
@@ -126,11 +126,11 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
     fontSel.onchange = () => { setTypo({ font: fontSel.value as FontChoice }); save() }
     const slider = (label: string, key: keyof Typography, min: number, max: number, step: number, fmt: (v: number) => string) => {
       const c = row(custom, label)
-      const input = el('input', 'slider', c) as HTMLInputElement
+      const input = el('input', 'slider', c)
       input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step)
       input.value = String(t[key])
       const v = el('span', 'octavo-ap-value', c, fmt(Number(t[key])))
-      input.oninput = () => { v.textContent = fmt(Number(input.value)); setTypo({ [key]: Number(input.value) } as Partial<Typography>); save() }
+      input.oninput = () => { v.textContent = fmt(Number(input.value)); setTypo({ [key]: Number(input.value) }); save() }
     }
     slider('Line spacing', 'lineHeight', 1.1, 2.2, 0.05, v => v.toFixed(2))
     slider('Character spacing', 'letterSpacing', -0.05, 0.2, 0.01, v => `${v.toFixed(2)} em`)
@@ -140,7 +140,7 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
     for (const [key, label] of toggles) {
       const c = row(custom, label)
       const tg = el('div', `checkbox-container${t[key] ? ' is-enabled' : ''}`, c)
-      tg.onclick = () => { setTypo({ [key]: !t[key] } as Partial<Typography>); save(); rerender() }
+      tg.onclick = () => { setTypo({ [key]: !t[key] }); save(); rerender() }
     }
     seg(row(custom, 'Columns'), [['1', 'One'], ['2', 'Two when wide']] as Array<['1' | '2', string]>, String(t.maxColumns) as '1' | '2', v => setTypo({ maxColumns: Number(v) }))
     const reset = el('button', 'mod-warning octavo-ap-reset', custom, 'Reset theme')

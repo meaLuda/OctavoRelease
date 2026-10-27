@@ -20,17 +20,17 @@ export function invertM(m: M6): M6 {
 }
 
 /** Two viewport corners (any order, from a drag) → PDF++ rect, rounded to whole points like PDF++. */
-export function viewportToPdfRect(transform: M6, x1: number, y1: number, x2: number, y2: number): PdfRect {
-  const inv = invertM(transform)
+export function viewportToPdfRect(transform: M6 | readonly number[], x1: number, y1: number, x2: number, y2: number): PdfRect {
+  const inv = invertM(transform as M6)
   const pts = [applyM(inv, x1, y1), applyM(inv, x2, y1), applyM(inv, x1, y2), applyM(inv, x2, y2)]
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1])
   return [Math.round(Math.min(...xs)), Math.round(Math.min(...ys)), Math.round(Math.max(...xs)), Math.round(Math.max(...ys))]
 }
 
 /** PDF rect → the box it covers in a viewport (pixels, top-left origin). */
-export function pdfRectToViewport(transform: M6, rect: readonly number[]): ViewBox {
-  const [l, b, r, t] = rect as PdfRect
-  const pts = [applyM(transform, l, b), applyM(transform, r, b), applyM(transform, l, t), applyM(transform, r, t)]
+export function pdfRectToViewport(transform: M6 | readonly number[], rect: readonly number[]): ViewBox {
+  const m = transform as M6, [l, b, r, t] = rect as PdfRect
+  const pts = [applyM(m, l, b), applyM(m, r, b), applyM(m, l, t), applyM(m, r, t)]
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1])
   const x = Math.min(...xs), y = Math.min(...ys)
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y }
@@ -59,7 +59,7 @@ export function regionLimits(isMobile: boolean, dpr: number): { dpr: number; max
 
 /** Is this error pdf.js saying its document (or worker) was destroyed under a render? Worth one retry with a fresh document. */
 export function isDestroyedDocError(e: unknown): boolean {
-  const m = `${(e as { name?: string })?.name ?? ''} ${(e as { message?: string })?.message ?? e ?? ''}`
+  const m = `${(e as { name?: string })?.name ?? ''} ${(e as { message?: string })?.message ?? (typeof e === 'string' ? e : '')}`
   return /destroy|terminated|transport|worker was|loading aborted|AbortException/i.test(m)
 }
 

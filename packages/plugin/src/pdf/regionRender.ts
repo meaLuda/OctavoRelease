@@ -3,6 +3,7 @@ import { openPdfDocument } from './source'
 import { imageCoverage } from './geometry'
 import { pdfRectToViewport, regionPlan, regionLimits, isDestroyedDocError, itemRect, type PdfRect } from './region'
 import { recolourScan, type ScanColors } from './scanDark'
+import type { PDFDocumentProxy, PDFPageProxy, PdfjsLibModule, TextItem } from './pdfjs'
 
 /**
  * Colours for Octavo's PDF dark modes (null = render as printed). Shared by the reader and embeds. Applied to
@@ -15,7 +16,7 @@ export function darkScanColors(dark: boolean, mode: string, scanned = false): Sc
   return null
 }
 
-interface DocEntry { key: string; doc: Promise<any>; users: number; dropped: boolean }
+interface DocEntry { key: string; doc: Promise<PDFDocumentProxy>; users: number; dropped: boolean }
 
 /**
  * A few open pdf.js documents for note embeds and hover previews, keyed by path and evicted
@@ -34,7 +35,7 @@ export class PdfDocCache {
     if (hit && hit.key === key) { this.docs.delete(file.path); this.docs.set(file.path, hit); e = hit } else {
       if (hit) this.drop(file.path)
       const doc = (async () => {
-        const lib = await loadPdfJs()
+        const lib = await loadPdfJs() as PdfjsLibModule
         return openPdfDocument(lib, this.app.vault.getResourcePath(file), file.stat.size, async () => new Uint8Array(await this.app.vault.readBinary(file)))
       })()
       e = { key, doc, users: 0, dropped: false }
@@ -55,7 +56,7 @@ export class PdfDocCache {
    * Run `fn` with the book's document held open (eviction waits for it). A failure because the document was
    * destroyed anyway (pdf.js worker gone) is retried once on a freshly opened document.
    */
-  async use<T>(file: TFile, fn: (pdf: any) => Promise<T>, retry = true): Promise<T> {
+  async use<T>(file: TFile, fn: (pdf: PDFDocumentProxy) => Promise<T>, retry = true): Promise<T> {
     const e = this.acquire(file)
     let held = true
     try {
@@ -72,10 +73,10 @@ export class PdfDocCache {
   }
 
   /** Is page n mostly a raster scan? pdf.js pageColors can't recolour those, so dark mode inverts them in CSS. */
-  async isScanned(file: TFile, page: any, n: number): Promise<boolean> {
+  async isScanned(file: TFile, page: PDFPageProxy, n: number): Promise<boolean> {
     const k = `${file.path}:${n}`
     if (this.scanned.has(k)) return this.scanned.get(k)!
-    const lib = await loadPdfJs()
+    const lib = await loadPdfJs() as PdfjsLibModule
     const ops = await page.getOperatorList()
     const vp = page.getViewport({ scale: 1 })
     const s = imageCoverage(ops.fnArray, ops.argsArray, lib.OPS, vp.width, vp.height) >= 0.6
@@ -92,7 +93,7 @@ export class PdfDocCache {
   }
 
   private destroy(e: DocEntry) {
-    void e.doc.then(doc => doc.destroy?.()).catch(() => {})
+    void e.doc.then(doc => doc.destroy()).catch(() => {})
   }
 
   clear() { for (const p of [...this.docs.keys()]) this.drop(p); this.scanned.clear() }
@@ -122,13 +123,14 @@ export interface Mark { rect: PdfRect; color: string }
  * Render `rect` of a page (or the whole page) into a new canvas `cssWidth` CSS px wide. Marks (PDF rects) are
  * painted over it — used for the quoted selection in hover previews.
  */
-export async function renderRegion(page: any, rect: readonly number[] | null, cssWidth: number, opts: { dark?: ScanColors | null; marks?: Mark[]; dpr?: number; doc?: Document } = {}): Promise<HTMLCanvasElement> {
+export async function renderRegion(page: PDFPageProxy, rect: readonly number[] | null, cssWidth: number, opts: { dark?: ScanColors | null; marks?: Mark[]; dpr?: number; doc?: Document } = {}): Promise<HTMLCanvasElement> {
   const vp1 = page.getViewport({ scale: 1 })
   const box1 = rect ? pdfRectToViewport(vp1.transform, rect) : { x: 0, y: 0, w: vp1.width, h: vp1.height }
   const lim = regionLimits(Platform.isMobile, opts.dpr ?? window.devicePixelRatio ?? 1)
   const plan = regionPlan(box1, cssWidth, lim.dpr, lim.maxPixels)
   const viewport = page.getViewport({ scale: plan.scale, offsetX: plan.offsetX, offsetY: plan.offsetY })
-  const canvas = (opts.doc ?? document).createElement('canvas')
+  // Detached: Document.createEl appends to the document itself, which throws. The box that takes it adopts it into its window.
+  const canvas = createEl('canvas')
   canvas.width = plan.width; canvas.height = plan.height
   const ctx = canvas.getContext('2d')!
   await page.render({ canvasContext: ctx, viewport }).promise
@@ -154,8 +156,8 @@ export async function renderRegion(page: any, rect: readonly number[] | null, cs
 }
 
 /** PDF++ selection (textDiv indices + offsets) → PDF rects for preview marks, from the page's text content. */
-export async function selectionMarks(page: any, sel: { beginIndex: number; beginOffset: number; endIndex: number; endOffset: number }, color: string): Promise<Mark[]> {
-  const items = (await page.getTextContent()).items.filter((it: any) => 'str' in it)
+export async function selectionMarks(page: PDFPageProxy, sel: { beginIndex: number; beginOffset: number; endIndex: number; endOffset: number }, color: string): Promise<Mark[]> {
+  const items = (await page.getTextContent()).items.filter((it): it is TextItem => 'str' in it)
   const out: Mark[] = []
   for (let i = sel.beginIndex; i <= sel.endIndex && i < items.length; i++) {
     const it = items[i]

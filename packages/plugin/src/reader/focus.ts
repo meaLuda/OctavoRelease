@@ -7,12 +7,14 @@ import { Platform } from 'obsidian'
  * element Fullscreen API would hide them). Mobile: hides Obsidian's bars (iOS can't
  * full-screen non-video elements reliably, and web content can't hide the status bar).
  */
+interface ElectronWindow { isFullScreen?(): boolean; setFullScreen?(on: boolean): void }
+
 export class FocusMode {
   private wasFullScreen = false
   active = false
   constructor(private doc: () => Document) {}
 
-  private win(): any { return (this.doc().defaultView as any)?.electronWindow }
+  private win(): ElectronWindow | undefined { return (this.doc().defaultView as (Window & { electronWindow?: ElectronWindow }) | null)?.electronWindow }
 
   enter() {
     if (this.active) return

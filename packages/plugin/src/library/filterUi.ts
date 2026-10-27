@@ -1,5 +1,6 @@
 import { App, FuzzySuggestModal, Modal, Setting, type FuzzyMatch } from 'obsidian'
 import { FACET_LABEL, type Facet, type FacetValue } from './organise'
+import { destructive } from '../platform'
 
 /** Searchable picker for one facet's values (folders show indented). Works as a sheet on phones. */
 export class FacetSuggestModal extends FuzzySuggestModal<FacetValue> {
@@ -34,7 +35,7 @@ export class ConfirmModal extends Modal {
     this.contentEl.createEl('p', { text: this.message })
     new Setting(this.contentEl)
       .addButton(b => b.setButtonText('Cancel').onClick(() => this.close()))
-      .addButton(b => b.setButtonText(this.yes).setWarning().onClick(() => { this.done = true; this.resolve(true); this.close() }))
+      .addButton(b => destructive(b.setButtonText(this.yes)).onClick(() => { this.done = true; this.resolve(true); this.close() }))
   }
   onClose() { if (!this.done) this.resolve(false); this.contentEl.empty() }
 }
