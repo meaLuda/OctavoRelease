@@ -54,6 +54,12 @@ The reader is free and works fully offline. **Octavo Cloud** is an optional paid
 
 Plans and prices are on the website. No free feature will ever be moved behind the paywall.
 
+## More from the developer
+
+![Octavo Cloud, LightningPDF and munyala.pro](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/more-from-the-developer.webp)
+
+[Octavo Cloud](https://octavo.devformat.tools/#pricing) · [LightningPDF](https://lightningpdf.dev), an HTML to PDF API · [munyala.pro](https://munyala.pro): I build backends, data platforms and AI.
+
 ## Disclosures
 
 - **Payments.** Octavo Cloud features require a paid subscription. All reader features are free.
