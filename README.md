@@ -63,7 +63,8 @@ Plans and prices are on the website. No free feature will ever be moved behind t
   - **AI providers you configure yourself**: Anthropic, OpenAI or a local Ollama server, with your own key.
 
   Nothing is sent in the background.
-- **No telemetry, no ads.** Octavo collects no usage data and shows no advertising.
+- **No telemetry.** Octavo collects no usage data.
+- **One static ad, in Octavo's settings only.** The bottom of Octavo's settings tab shows three links with QR codes: Octavo Cloud, LightningPDF (the developer's PDF API) and the developer's site. They are bundled in the plugin: nothing is loaded from the internet, clicks are not tracked, and no ads appear anywhere else.
 - **Local storage.** Covers, tables of contents and book caches are kept in Obsidian's per-device browser storage (IndexedDB) and are never synced. Your highlights, notes and progress are plain files in your vault.
 - **Files outside the vault.** Octavo does not read or write files outside your vault.
 - **Why it lists vault files.** The library finds your books by listing the vault's EPUB and PDF files, and links highlights to notes. File contents are only read for books you open.

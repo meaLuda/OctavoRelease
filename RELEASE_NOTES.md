@@ -1,4 +1,8 @@
-Octavo Reader 1.1.0 beta 10
+Octavo Reader 1.1.0 beta 11
+
+New in beta 11
+- A thank-you strip at the bottom of Octavo's settings: three paper tickets with QR codes for Octavo Cloud, LightningPDF and the developer's site. Bundled in the plugin; nothing is loaded from the internet and nothing is tracked.
+- The plugin listing no longer shows a funding link to paid plans.
 
 New in beta 10
 - Your place stays put when you change theme, font, size or spacing, in books and PDFs (scrolled and paged).
