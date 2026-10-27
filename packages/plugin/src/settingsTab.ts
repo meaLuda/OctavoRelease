@@ -7,6 +7,7 @@ import { Notice } from 'obsidian'
 import { ImportModal } from './library/ImportModal'
 import { renderLibrarySettings } from './library/librarySettings'
 import { renderCopySettings } from './reader/copySettings'
+import { renderDevStrip } from './devStrip'
 
 const TAP_LABELS: Record<TapAction, string> = { prev: 'Previous page', next: 'Next page', menu: 'Show controls', bookmark: 'Bookmark', toc: 'Contents', search: 'Search', none: 'Nothing' }
 
@@ -144,5 +145,6 @@ export class OctavoSettingTab extends PluginSettingTab {
     new Setting(c).setName('Cloud tips in the reader').setDesc('A small, dismissible hint at most once per book: a book over Obsidian Sync\'s 5 MB limit, a scanned PDF, or read-aloud with the system voice.')
       .addToggle(t => t.setValue(s.cloudPrompts).onChange(v => { s.cloudPrompts = v; save() }))
     this.plugin.cloud.renderSettings(c, () => this.render())
+    renderDevStrip(c)
   }
 }
