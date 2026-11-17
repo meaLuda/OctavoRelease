@@ -2,15 +2,55 @@
 
 **Read EPUB and PDF books in Obsidian, with highlights that live in your vault as linked Markdown.**
 
-Octavo is a calm, full-featured book reader for Obsidian on desktop, iPhone, iPad and Android.
+![Pride and Prejudice open in Octavo, Paper theme, with a highlighted opening line](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-hero.webp)
 
-- **EPUB, PDF, MOBI, AZW3, FB2 and CBZ**: themes, fonts and spacing, page turns, two-page spreads, and a full-screen focus mode.
-- **Highlights are notes.** One tap saves a highlight to the book's note as Markdown, with a deep link back to the exact passage.
+Octavo is a calm, full-featured book reader for Obsidian on desktop, iPhone, iPad and Android. Every reader feature is free.
+
+### Your library, built on your notes
+
+Covers, Continue Reading, shelves and collections. Each book is a Markdown note, so it works with Bases and search.
+
+![The Octavo library with book covers, progress and Continue Reading](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-library.webp)
+
+### Highlights become notes
+
+Select text, pick a colour, add a note. It lands in the book's note as Markdown, with a link back to the exact passage. Define, translate, read aloud or make a quote card from the same menu.
+
+![Selecting a passage in Pride and Prejudice next to the book's note with saved highlights](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-highlights.webp)
+
+### Made for long reading
+
+A reading ruler that follows your eye (four styles from a 2023 study with readers with dyslexia), True Black and six other themes, a dimmer, footnote pop ups and a screen that stays awake.
+
+![Moby Dick in the True Black theme with the reading ruler on one line](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-ruler.webp)
+
+### Flip through without losing your place
+
+Drag through the book to look ahead, then go back to your page or jump there.
+
+![The flip through preview showing chapter XXIX at 42 percent](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-flip.webp)
+
+### See your reading
+
+A year of reading days, streaks, time per book and books finished, all kept in your vault.
+
+![Reading stats with a year heatmap, streak and time per book](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-stats.webp)
+
+### Share a line
+
+Turn any passage into a quote card in Paper, Night or Ink, then copy it or save it to your vault.
+
+![A quote card of the opening line of Pride and Prejudice](https://raw.githubusercontent.com/meaLuda/OctavoRelease/main/assets/octavo-quote.webp)
+
+### Everything else
+
+- **EPUB, PDF, MOBI, AZW3, FB2 and CBZ**: themes, fonts and spacing, page turns, two page spreads, line width and a full screen focus mode.
 - **Your notes in the margins.** Any note that links into a book shows up in the text. Hover over it to preview.
 - **PDF++ links keep working.** Importers bring in highlights from Annotator, Weave, Elton, Kindle, KOReader, Readest and others.
-- **A real library**: covers, Continue Reading, shelves and collections, built on your notes so they work with Bases and search.
-- **Read-aloud** with your system voices, plus optional AI (your own API key or a local model through Ollama).
+- **Study tools**: search with whole word and match case options, daily highlights in your daily note, a "story so far" recap when you come back to a book, and a vocabulary list from Define.
+- **Read aloud** with your system voices, plus optional AI (your own API key or a local model through Ollama).
 - **Goals and streaks** if you want them, logged to your daily note. Nothing leaves your device.
+- **Page turner keys and remotes**, double tap to define, and text size remembered per book.
 
 Website: https://octavo.devformat.tools
 
@@ -50,9 +90,9 @@ The reader is free and works fully offline. **Octavo Cloud** is an optional paid
 - OCR for scanned PDFs
 - natural neural voices
 - KOReader progress sync
-- hosted AI, on the Cloud + AI plan
+- hosted AI, on the Cloud + AI plan (coming soon)
 
-Plans and prices are on the website. No free feature will ever be moved behind the paywall.
+**[See plans and prices](https://octavo.devformat.tools/#pricing)**. No free feature will ever be moved behind the paywall.
 
 ## More from the developer
 
@@ -67,6 +107,7 @@ Plans and prices are on the website. No free feature will ever be moved behind t
 - **Network use.** Octavo makes network requests only when you use these features:
   - **Octavo Cloud** (`octavo.devformat.tools`): signing in, checking your plan, uploading and downloading cloud-library books, OCR and natural-voice jobs, and checkout.
   - **AI providers you configure yourself**: Anthropic, OpenAI or a local Ollama server, with your own key.
+  - **Wiktionary** (`en.wiktionary.org`): when you use Define with no AI set up, only the word you selected is looked up.
 
   Nothing is sent in the background.
 - **No telemetry.** Octavo collects no usage data.

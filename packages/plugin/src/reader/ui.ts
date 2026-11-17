@@ -147,6 +147,10 @@ export interface PopoverActions {
   /** Summarise the selection with AI (fresh selections only). */
   summarise?: () => void
   speak: () => void
+  /** Translate the text with AI. */
+  translate?: () => void
+  /** Turn the passage into a shareable image. */
+  card?: () => void
   remove?: () => void
   openInNote?: () => void
 }
@@ -186,6 +190,8 @@ export class SelectionPopover {
     tool('sparkles', 'Ask', actions.ask)
     if (actions.summarise) tool('list', 'Summarise', actions.summarise)
     tool('volume-2', 'Speak', actions.speak)
+    if (actions.translate) tool('languages', 'Translate', actions.translate)
+    if (actions.card) tool('image', 'Quote card', actions.card)
     if (actions.openInNote) tool('file-text', 'In note', actions.openInNote)
     if (actions.remove) tool('trash-2', 'Remove', actions.remove)
     p.show()

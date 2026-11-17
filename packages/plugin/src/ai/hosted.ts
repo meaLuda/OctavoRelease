@@ -3,7 +3,7 @@
  * flashcard parsing and the Spaced Repetition cards writer. Pure: no Obsidian imports, unit-tested.
  */
 
-export type AiFeature = 'explain' | 'summarise' | 'chapter' | 'ask' | 'flashcards'
+export type AiFeature = 'explain' | 'summarise' | 'chapter' | 'ask' | 'flashcards' | 'translate' | 'recap'
 export interface Card { q: string; a: string }
 
 export interface ExplainInput { text: string; context?: string; bookTitle?: string }
@@ -11,13 +11,16 @@ export interface SummariseInput { text: string }
 export interface ChapterInput { text: string; title?: string }
 export interface AskInput { question: string; passages: string[]; position?: number | string; bookTitle?: string }
 export interface FlashcardsInput { highlights: Array<string | { text: string; note?: string }>; bookTitle?: string }
-export type AiInput = ExplainInput | SummariseInput | ChapterInput | AskInput | FlashcardsInput
+export interface TranslateInput { text: string; to: string }
+/** "Story so far": only what the reader has passed (summaries, highlights, the pages just before their place). */
+export interface RecapInput { bookTitle?: string; position?: number | string; summaries?: string[]; highlights?: string[]; recent: string }
+export type AiInput = ExplainInput | SummariseInput | ChapterInput | AskInput | FlashcardsInput | TranslateInput | RecapInput
 
 /** Server reply for POST /v1/ai/:feature. */
 export interface HostedReply { text?: string; cards?: Card[]; provider: string; cached: boolean; creditsLeft: number; truncated?: boolean }
 
 /** Input caps (characters), matching the server's, so we never send more than it will read. */
-export const INPUT_CAPS: Record<AiFeature, number> = { explain: 4_000, summarise: 20_000, chapter: 120_000, ask: 16_000, flashcards: 8_000 }
+export const INPUT_CAPS: Record<AiFeature, number> = { explain: 4_000, summarise: 20_000, chapter: 120_000, ask: 16_000, flashcards: 8_000, translate: 6_000, recap: 24_000 }
 
 /** The request for Octavo AI. `allowFallback: false` keeps DeepSeek (servers in China) out of the route entirely. */
 export function hostedRequest(feature: AiFeature, input: AiInput, allowFallback: boolean): { path: string; method: 'POST'; body: string } {
@@ -30,8 +33,21 @@ export function hostedRequest(feature: AiFeature, input: AiInput, allowFallback:
     case 'chapter': { const i = input as ChapterInput; body = { text: clip(i.text), title: i.title }; break }
     case 'ask': { const i = input as AskInput; body = { question: clip(i.question, 1_000), passages: budget(i.passages, cap), position: i.position, bookTitle: i.bookTitle }; break }
     case 'flashcards': { const i = input as FlashcardsInput; body = { highlights: budgetHighlights(i.highlights, cap), bookTitle: i.bookTitle }; break }
+    case 'translate': { const i = input as TranslateInput; body = { text: clip(i.text), to: clip(i.to, 60) }; break }
+    case 'recap': { const i = input as RecapInput; body = { ...recapParts(i), bookTitle: i.bookTitle, position: i.position }; break }
   }
   return { path: `/v1/ai/${feature}`, method: 'POST', body: JSON.stringify({ ...body, allowFallback }) }
+}
+
+/** Recap input within its cap: the recent pages first (they matter most), then summaries, then highlights. */
+export function recapParts(i: RecapInput): { recent: string; summaries: string[]; highlights: string[] } {
+  const cap = INPUT_CAPS.recap
+  // the end of the recent text is where the reader stopped: keep the end
+  const recent = i.recent.length > cap / 2 ? i.recent.slice(i.recent.length - cap / 2) : i.recent
+  const summaries = budget(i.summaries ?? [], Math.floor((cap - recent.length) * 0.6))
+  const used = recent.length + summaries.reduce((a, s) => a + s.length, 0)
+  const highlights = budget((i.highlights ?? []).slice(-40), cap - used)
+  return { recent, summaries, highlights }
 }
 
 function budget(list: string[], cap: number): string[] {
@@ -74,9 +90,27 @@ export const BYO_PROMPTS = {
   ask: (i: AskInput) =>
     `You are a reading companion for the book "${i.bookTitle ?? ''}". The reader is ${pct(i.position)}. Answer the question using only the passages below, in at most 150 words. Never reveal or hint at events beyond the reader's position (no spoilers). If the passages don't contain the answer, say so.\n\n` +
     `${budget(i.passages, INPUT_CAPS.ask).map((p, n) => `Passage ${n + 1}:\n"""${p}"""`).join('\n\n')}\n\nQuestion: ${i.question}`,
+  translate: (i: TranslateInput) =>
+    `Translate the text below into ${i.to}. Keep the meaning, tone and paragraph breaks. Reply with the translation only.\n\nText:\n"""${i.text.slice(0, INPUT_CAPS.translate)}"""`,
+  recap: (i: RecapInput) => {
+    const p = recapParts(i)
+    return `You are a reading companion for the book "${i.bookTitle ?? ''}". The reader is ${pct(i.position)} and is coming back after a break. ` +
+      `Write "the story so far": a short recap (at most 200 words, a few short paragraphs or bullets) of what they have read, ending with where they stopped. ` +
+      `Use only the material below. Never mention or hint at anything that comes later in the book (no spoilers).\n\n` +
+      (p.summaries.length ? `Chapter summaries the reader saved:\n${p.summaries.map(s => `- ${s}`).join('\n')}\n\n` : '') +
+      (p.highlights.length ? `Passages the reader highlighted:\n${p.highlights.map(h => `- "${h}"`).join('\n')}\n\n` : '') +
+      `The pages just before where they stopped:\n"""${p.recent}"""`
+  },
   flashcards: (i: FlashcardsInput) =>
     `Make study flashcards from these highlights${i.bookTitle ? ` from "${i.bookTitle}"` : ''}. Return JSON only, in this shape: {"cards":[{"q":"question","a":"answer"}]}. One to three cards per highlight, at most 40 cards; answers under 25 words.\n\n` +
     budgetHighlights(i.highlights, INPUT_CAPS.flashcards).map((h, n) => `${n + 1}. ${h.text}${h.note ? `\n(Reader's note: ${h.note})` : ''}`).join('\n\n'),
+}
+
+/** Saved chapter summaries in a book note ("## Chapter summaries", one "### title" each), oldest first. */
+export function savedSummaries(md: string): string[] {
+  const m = /\n## Chapter summaries\n([\s\S]*?)(?=\n## |$)/.exec(`\n${md}`)
+  if (!m) return []
+  return m[1].split(/\n(?=### )/).map(b => b.replace(/^### /, '').replace(/\s+/g, ' ').trim()).filter(Boolean)
 }
 
 // ───────────── flashcards ─────────────

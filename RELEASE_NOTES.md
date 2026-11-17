@@ -1,42 +1,25 @@
-Octavo Reader 1.1.0
+Octavo Reader 1.1.1
 
-Everything since 1.0.5.
+Reading comfort
+- Reading ruler: a band that follows your eye down the page, in books, PDF pages and Text view. Four styles from a 2023 study with readers with dyslexia (Spotlight, Shade, Bar, Underline), one or three lines, adjustable shade, theme colours. Move it with the pointer, the arrow keys or the drag handle; it follows read aloud too. Appearance, Reading ruler.
+- Dimmer, stronger text contrast on dark themes, keep the screen awake while reading, and a line width setting.
+- Footnote pop ups: tap a note mark to read the footnote without leaving the page.
+- Text size stays the same when you change theme, and a theme picked inside a book is remembered for that book.
+- Page turner keys and remotes, and double tap a word to define it.
 
-Reading
-- Your place stays put when you change theme, font, size or spacing, in books and PDFs (scrolled and paged).
-- Library folder: Octavo asks once where your books live (Books by default) and lists only that folder; change it any time in Settings, Library.
-- Continue reading cards can be dismissed with the ×.
-- Duplicate book notes are found and merged into one (Command: Repair duplicate book notes; also runs once at startup). Extra copies go to the trash, never deleted.
-- PDF auto-scroll: the page glides down at your speed; in page-turn mode it reads down the page, pauses, and turns. Space pauses, Esc stops.
-- Scroll lock: a zoomed page moves only in the direction you start (down or across), never diagonally. Appearance, Layout, Lock scroll direction.
-- PDFs follow your Appearance and theme like books do: Light, Dark or Auto, and themes such as Paper, Calm or True Black tint the page and ink (photos stay photos). Original keeps the PDF as printed. The PDF Dark mode row chooses how pages darken.
-- Night light keeps your theme: Paper, Calm, Focus and the rest stay distinct in the evening, just warmer. The Appearance panel says when it is warming the page.
-- PDFs fit the reading width by default, so print is easy to read; pages still turn one at a time (a tall page scrolls first, then turns). Whole page (Auto) and Page are still a choice per book.
-- PDFs read like a book by default: one whole page on screen, turned with the arrow keys, a click near the page edge, or one swipe or scroll per page. Continuous scrolling is still a choice per book (Appearance, Layout, Scroll).
-- PDF: one page at a time by default at any window size, with automatic zoom like Firefox (page width, never oversized on a big screen).
-- Two pages side by side is now a choice per book (Appearance, Layout, Pages: Two), paired like a printed book (cover alone, then facing pages) and scrolling normally.
-- Crop margins works in two-page view too; a zoom you set keeps its size when the window changes; one page turn per trackpad swipe in Paged mode.
-
-PDF
-- Dark mode keeps photos as photos: text and drawings turn light on dark, photos and colour illustrations keep their colours. Works on scanned books and old, yellowed paper too.
-- Select an area of a page: copy it as an embed link (PDF++ format), as an image, or add it to the book note. Region embeds show just that area in your notes.
-- Hover a PDF link in a note to preview the page, with the quoted passage marked.
-- Printed page labels (xii, 42) in the footer, links and "Go to page".
+Finding your way
+- Flip through: drag through the book to look ahead, then go back to your page or jump there.
+- Search with whole word and match case options, with chapter names in the results.
+- PDFs: tap the footer to switch between pages left in the chapter, time left and progress in the book, as in books.
+- A book that is already open is switched to instead of opening in a second tab.
 
 Notes and study
-- Copy formats: edit the quote, link and callout templates; "Copy as…" in the selection menu.
-- Export highlights to a literature note that refreshes without touching your own text.
-- Zotero: citekey from the book note, "Copy citation" ([@key, p. 12]), and import of Zotero Integration annotations.
-- Tags on highlights, with tag filters in the highlights panel.
+- Reading stats: a year of reading days, streaks, time per book and books finished.
+- Daily highlights: a few of your highlights in your daily note each day (Settings, Daily highlights).
+- Quote cards: turn a passage into an image in Paper, Night or Ink, then copy it or save it to your vault.
+- Define works offline for common words, and uses the macOS dictionary where available.
+- With AI set up: translate a selection, and a "story so far" recap when you come back to a book after a while.
 
-Library
-- New collection button, filters by folder, tag, series, author and format, smart collections, rename and delete collections.
-- Auto-add books dropped into watched folders. Library settings for folders, hidden books and minimum PDF size.
-- Import fixes for KOReader, Kindle and Readest.
-
-Octavo Cloud
-- Account section: plan, renewal date, usage, Manage subscription, export your data, delete your account.
-- Cloud collections and tags sync with your book notes.
-
-Also
-- A thank-you strip at the bottom of Octavo's settings: three paper tickets with QR codes for Octavo Cloud, LightningPDF and the developer's site. Bundled in the plugin; nothing is loaded from the internet and nothing is tracked.
+Fixes
+- The selection menu wraps in a narrow split view instead of running off the edge.
+- The library index is rebuilt once book details are read, so new books show up straight away.

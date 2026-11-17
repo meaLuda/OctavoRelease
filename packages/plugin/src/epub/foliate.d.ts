@@ -109,6 +109,8 @@ declare module '@octavo/foliate/view.js' {
   export interface ProgressItem { label?: string; href?: string }
   export interface RelocateDetail {
     cfi: string
+    /** Why it moved: page, snap (swipe), navigation (go to), anchor (relayout), scroll, selection. */
+    reason?: string
     fraction: number
     range?: Range
     tocItem?: ProgressItem | null
@@ -173,5 +175,16 @@ declare module '@octavo/foliate/view.js' {
     search(opts: { query: string; index?: number; [k: string]: unknown }): AsyncGenerator<SearchResult, void, undefined>
     clearSearch(): void
     initTTS(granularity?: 'word' | 'sentence', nodeFilter?: (node: Node) => number, highlighter?: (range: Range) => void): Promise<void>
+  }
+}
+
+declare module '@octavo/foliate/footnotes.js' {
+  import type { View, Book } from '@octavo/foliate/view.js'
+  export interface FootnoteRender { view: View; href: string; type: string | null; hidden: boolean; index: number }
+  export class FootnoteHandler extends EventTarget {
+    detectFootnotes: boolean
+    /** Shows the note for a `link` event when it is a footnote reference (calls preventDefault); undefined otherwise. */
+    handle(book: Book, e: CustomEvent<{ a: HTMLAnchorElement; href: string }>): Promise<void> | undefined
+    addEventListener(type: 'before-render' | 'render', listener: (e: CustomEvent<FootnoteRender>) => void): void
   }
 }

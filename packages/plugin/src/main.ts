@@ -1,4 +1,4 @@
-import { addIcon, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type App, type TAbstractFile } from 'obsidian'
+import { addIcon, FileView, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type App, type TAbstractFile } from 'obsidian'
 import { Pace, computeStreak, parseHighlights as parseHighlightsFresh, buildLiteratureNote, refreshLiteratureNote, resolveLiteratureNotePath, EXPORT_BOOK_ID, citekeyFrom, type Highlight, type CopyFormat, type LiteratureInput } from '@octavo/shared'
 import { upgradeLayouts } from './pdf/layout'
 import { DEFAULT_SETTINGS, type OctavoSettings } from './settings'
@@ -18,6 +18,11 @@ import { besideLeaf } from './platform'
 import { collectDiagnostics } from './diagnostics'
 import { PdfNoteEmbeds } from './pdf/embeds'
 import { copyAs, copyCitation, type CopySource } from './reader/copy'
+import { OfflineDictionary } from './reader/dictionary'
+import { QuoteCardModal } from './reader/quoteCard'
+import { StatsView, STATS_VIEW } from './library/StatsView'
+import { dailySection, pickHighlights, recordShown } from './library/resurface'
+
 
 /** Octavo mark: an open book with a ribbon bookmark (100×100, currentColor, Lucide-weight strokes). */
 const OCTAVO_ICON = `<g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
@@ -41,6 +46,8 @@ export default class OctavoPlugin extends Plugin {
 
   /** Resolves once settings are loaded; views await it so they can be registered synchronously. */
   ready!: Promise<void>
+  /** Definitions kept for Define without internet (see reader/dictionary.ts). */
+  dict!: OfflineDictionary
 
   async onload() {
     // Register views first (synchronously) so Obsidian can restore open book tabs on startup.
@@ -48,6 +55,8 @@ export default class OctavoPlugin extends Plugin {
     this.registerView(EPUB_VIEW, leaf => new EpubView(leaf, this))
     this.registerView(PDF_VIEW, leaf => new PdfView(leaf, this))
     this.registerView(LIBRARY_VIEW, leaf => new LibraryView(leaf, this))
+    this.registerView(STATS_VIEW, leaf => new StatsView(leaf, this))
+    this.dict = new OfflineDictionary(this.app, this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`, () => this.vocabularyPath())
     for (const ext of BOOK_EXTENSIONS) {
       try { this.registerExtensions([ext], EPUB_VIEW) }
       catch { console.warn(`Octavo: .${ext} is already handled by another plugin; use "Open in Octavo".`) }
@@ -74,7 +83,13 @@ export default class OctavoPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       this.library.reindex()
-      this.afterMetadataResolved(() => { if (!this.settings.duplicatesRepaired) void this.repairDuplicateNotes(true) })
+      // the first index can run before every note is parsed: rebuild it once metadata is resolved
+      this.afterMetadataResolved(() => {
+        this.library.reindex()
+        this.app.workspace.getLeavesOfType(LIBRARY_VIEW).forEach(l => { if (l.view instanceof LibraryView) l.view.refresh() })
+        if (!this.settings.duplicatesRepaired) void this.repairDuplicateNotes(true)
+        void this.addDailyHighlights(true)
+      })
       void this.loadCustomFont()
       this.updateStatus()
       void this.welcomeOnMobile()
@@ -101,15 +116,23 @@ export default class OctavoPlugin extends Plugin {
     this.settings = {
       ...d, ...data,
       goals: { ...d.goals, ...data.goals },
-      stats: { ...d.stats, ...data.stats },
+      stats: { ...d.stats, ...data.stats, minutesByBook: { ...data.stats?.minutesByBook } },
       tts: { ...d.tts, ...data.tts },
       ai: { ...d.ai, ...data.ai },
       cloud: { ...d.cloud, ...data.cloud },
       library: { ...d.library, ...data.library },
       copyTemplates: { ...d.copyTemplates, ...data.copyTemplates },
       overrides: { ...data.overrides },
+      bookThemes: { ...data.bookThemes },
+      bookTextSizes: { ...data.bookTextSizes },
+      dailyHighlights: { ...d.dailyHighlights, ...data.dailyHighlights, shown: { ...data.dailyHighlights?.shown } },
       pdfLayouts: { ...data.pdfLayouts },
       tapZones: Array.isArray(data.tapZones) && data.tapZones.length === 9 ? data.tapZones : d.tapZones,
+    }
+    if (data.textSize == null) {
+      // text size used to be saved per theme: keep the size of the theme in use, for every theme
+      this.settings.textSize = data.overrides?.[this.settings.theme]?.fontSize ?? 100
+      for (const o of Object.values(this.settings.overrides)) delete o?.fontSize
     }
     if ((this.settings.pdfLayoutVersion ?? 1) < 3) {
       this.settings.pdfLayouts = upgradeLayouts(this.settings.pdfLayouts, this.settings.pdfLayoutVersion ?? 1)
@@ -125,8 +148,32 @@ export default class OctavoPlugin extends Plugin {
 
   // ───────────────────────── opening books ─────────────────────────
 
+  /** The Octavo reader tab already showing this book, other than `except`. */
+  readerLeafFor(file: TFile, except?: WorkspaceLeaf): WorkspaceLeaf | undefined {
+    return [...this.app.workspace.getLeavesOfType(EPUB_VIEW), ...this.app.workspace.getLeavesOfType(PDF_VIEW)]
+      .find(l => l !== except && l.view instanceof FileView && l.view.file?.path === file.path)
+  }
+
+  /**
+   * A book is read in one tab only: two readers would both write the position to its note.
+   * When `file` is already open elsewhere, that tab is shown (with `eState`, e.g. a deep link) and the other leaf is returned.
+   */
+  switchToOpenReader(file: TFile, leaf: WorkspaceLeaf | undefined, eState?: unknown): WorkspaceLeaf | undefined {
+    const open = this.readerLeafFor(file, leaf)
+    if (!open) return undefined
+    void this.app.workspace.revealLeaf(open)
+    this.app.workspace.setActiveLeaf(open, { focus: true })
+    if (eState) open.setEphemeralState(eState)
+    return open
+  }
+
   async openInOctavo(file: TFile, leaf?: WorkspaceLeaf, eState?: Record<string, unknown>) {
     const type = file.extension === 'pdf' ? PDF_VIEW : EPUB_VIEW
+    if (this.switchToOpenReader(file, leaf, eState)) {
+      // getLeaf('tab') already made an empty tab for this book: close it
+      if (leaf?.view.getViewType() === 'empty') leaf.detach()
+      return
+    }
     const l = leaf ?? this.app.workspace.getLeaf(false)
     await l.setViewState({ type, state: { file: file.path }, active: true }, eState)
   }
@@ -221,6 +268,26 @@ export default class OctavoPlugin extends Plugin {
         const v = this.app.workspace.getActiveViewOfType(PdfView)
         if (!v) return false
         if (!checking) v.toggleAreaSelect()
+        return true
+      },
+    })
+    this.addCommand({ id: 'reading-stats', name: 'Open reading stats', icon: 'bar-chart-3', callback: () => void this.openStats() })
+    this.addCommand({ id: 'daily-highlights', name: 'Add highlights from my books to today\'s daily note', icon: 'sparkles', callback: () => void this.addDailyHighlights(false) })
+    this.addCommand({
+      id: 'story-so-far', name: 'Story so far: a recap up to your page', icon: 'history',
+      checkCallback: checking => {
+        const v = this.activeReader()
+        if (!v) return false
+        if (!checking) void this.recap(v)
+        return true
+      },
+    })
+    this.addCommand({
+      id: 'flip-through', name: 'Flip through pages (peek without losing your place)', icon: 'book-open',
+      checkCallback: checking => {
+        const v = this.activeReader()
+        if (!v) return false
+        if (!checking) v.openPeek()
         return true
       },
     })
@@ -374,6 +441,9 @@ export default class OctavoPlugin extends Plugin {
 
   private get hostedAi() { return this.settings.ai.provider === 'octavo' }
 
+  /** AI is set up (Octavo AI signed in, or a provider of your own); no notice. */
+  aiAvailable(): boolean { return aiConfigured(this.settings) }
+
   /** Tells the user how to turn AI on; false when it isn't set up. */
   private aiReady(): boolean {
     if (aiConfigured(this.settings)) return true
@@ -409,6 +479,7 @@ export default class OctavoPlugin extends Plugin {
     let defn = ''
     let footer = ''
     modal.open()
+    let failed: unknown = null
     try {
       if (aiConfigured(this.settings)) {
         const r = await this.runAi('explain', { text: word, context },
@@ -421,8 +492,110 @@ export default class OctavoPlugin extends Plugin {
         const en = res.status === 200 ? ((res.json as { en?: Sense[] } | null)?.en ?? []) : []
         defn = en.slice(0, 2).map(p => `*${p.partOfSpeech}* — ${(p.definitions?.[0]?.definition ?? '').replace(/<[^>]+>/g, '')}`).join('\n\n')
       }
-    } catch (e) { if (this.hostedAi) { modal.setMarkdown(this.aiError(e)); return } defn = '' }
-    modal.setMarkdown(defn ? `${defn}${footer ? `\n\n${footer}` : ''}` : `No definition found for **${word}**. Set up an AI provider in settings for context-aware definitions.`)
+    } catch (e) { failed = e; defn = '' }
+    if (defn) { void this.dict.put(word, defn); modal.setMarkdown(`${defn}${footer ? `\n\n${footer}` : ''}`); return }
+    // offline, or nothing found: a definition kept from an earlier lookup or the Vocabulary note
+    const kept = await this.dict.get(word)
+    if (kept) { defn = kept; modal.setMarkdown(`${kept}\n\n*Saved definition (offline).*`); return }
+    if (failed && this.hostedAi) { modal.setMarkdown(this.aiError(failed)); return }
+    if (this.lookUpNatively()) { modal.close(); return }
+    modal.setMarkdown(failed
+      ? `No connection, and **${word}** has not been looked up on this device before. Words you look up while online are kept for offline use.`
+      : `No definition found for **${word}**. Set up an AI provider in settings for context-aware definitions.`)
+  }
+
+  /** macOS desktop: the system dictionary pop-up for the current selection (works offline). */
+  private lookUpNatively(): boolean {
+    if (!Platform.isMacOS || !Platform.isDesktopApp) return false
+    const wc = (window as Window & { electronWindow?: { webContents?: { showDefinitionForSelection?: () => void } } }).electronWindow?.webContents
+    if (!wc?.showDefinitionForSelection) return false
+    wc.showDefinitionForSelection()
+    return true
+  }
+
+  private vocabularyPath(): string { return normalizePath(`${this.settings.booksFolder || 'Books'}/Vocabulary.md`) }
+
+  /** The language to translate into: the setting, else the device language ("English", "Kiswahili"…). */
+  translateTarget(): string {
+    const set = this.settings.translateTo.trim()
+    if (set) return set
+    const tag = (navigator.language || 'en').split('-')[0]
+    try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(tag) ?? 'English' } catch { return 'English' }
+  }
+
+  /** Translate a passage with AI; the translation can be copied or kept in the book note. */
+  async translate(text: string, title: string) {
+    if (!this.aiReady() || !text.trim()) return
+    const to = this.translateTarget()
+    let out = ''
+    const modal = new MarkdownModal(this.app, `Translation · ${to}`, '*Translating…*', [
+      { label: 'Copy', run: () => void navigator.clipboard.writeText(out).then(() => new Notice('Translation copied')) },
+      { label: 'Save to book note', cta: true, run: () => void this.saveAnswer(title, text, out, 'Translations') },
+    ])
+    modal.open()
+    try {
+      const input = { text, to }
+      const r = await this.runAi('translate', input, () => BYO_PROMPTS.translate(input), t => { out = t; modal.setMarkdown(t) })
+      out = r.text
+      modal.setMarkdown(r.footer ? `${out}\n\n${r.footer}` : out)
+    } catch (e) { modal.setMarkdown(this.aiError(e)) }
+  }
+
+  /** "Story so far": a spoiler-free recap of what the reader has passed, from the reader's own material. */
+  async recap(view: EpubView | PdfView) {
+    if (!this.aiReady()) return
+    const input = await view.recapInput()
+    if (!input?.recent.trim()) { new Notice('Octavo: read a little first, then ask for the story so far.'); return }
+    let out = ''
+    const modal = new MarkdownModal(this.app, 'The story so far', '*Remembering…*', [
+      { label: 'Save to book note', cta: true, run: () => void (view.bookNote && this.appendToNote(view.bookNote, 'Story so far', `*${moment().format('YYYY-MM-DD')}, at ${typeof input.position === 'number' ? `${Math.round(input.position * 100)}%` : input.position ?? ''}*\n\n${out}`).then(() => new Notice('Saved to the book note'))) },
+    ])
+    modal.open()
+    try {
+      const r = await this.runAi('recap', input, () => BYO_PROMPTS.recap(input), t => { out = t; modal.setMarkdown(t) })
+      out = r.text
+      modal.setMarkdown(r.footer ? `${out}\n\n${r.footer}` : out)
+    } catch (e) { modal.setMarkdown(this.aiError(e)) }
+  }
+
+  /** Quote card for a passage: saved next to attachments (Obsidian's attachment folder setting). */
+  quoteCard(text: string, title: string, note: TFile | null) {
+    const author = note ? propText(this.library.getProps(note).author ?? '') || undefined : undefined
+    new QuoteCardModal(this.app, { text, title, author }, name => this.app.fileManager.getAvailablePathForAttachment(name, note?.path ?? '')).open()
+  }
+
+  async openStats() {
+    const existing = this.app.workspace.getLeavesOfType(STATS_VIEW)[0]
+    if (existing) { await this.app.workspace.revealLeaf(existing); if (existing.view instanceof StatsView) existing.view.render(); return }
+    await this.app.workspace.getLeaf('tab').setViewState({ type: STATS_VIEW, active: true })
+  }
+
+  /**
+   * Daily highlights: a few highlights from your books, embedded in today's daily note under "From my books".
+   * `auto`: the once-a-day run at startup (only when turned on, quiet when there is nothing to add).
+   */
+  async addDailyHighlights(auto: boolean) {
+    const dh = this.settings.dailyHighlights
+    const today = moment().format('YYYY-MM-DD')
+    if (auto && (!dh.enabled || dh.lastDay === today)) return
+    const all: Array<{ id: string; book: string; note: TFile }> = []
+    for (const { note } of this.library.allBooks()) for (const h of await this.library.highlights(note)) all.push({ id: h.id, book: note.path, note })
+    if (!all.length) { if (!auto) new Notice('Octavo: no highlights yet. Highlight something in a book first.'); return }
+    const picks = pickHighlights(all, dh.shown, Math.max(1, dh.count), today)
+    const daily = await this.library.dailyNote()
+    if (!daily || !picks.length) return
+    const embeds = picks.map(p => `!${this.app.fileManager.generateMarkdownLink(p.note, daily.path, `#^oct-${p.id}`).replace(/^!/, '')}`)
+    const heading = 'From my books'
+    await this.app.vault.process(daily, md => {
+      const section = dailySection(heading, embeds)
+      // run twice on one day (the command): replace today's picks instead of stacking them
+      const re = new RegExp(`\\n?## ${heading}\\n[\\s\\S]*?(?=\\n## |$)`)
+      return re.test(md) ? md.replace(re, `\n${section}\n`) : `${md.replace(/\s+$/, '')}${md.trim() ? '\n\n' : ''}${section}\n`
+    })
+    dh.shown = recordShown(dh.shown, picks.map(p => p.id), today)
+    dh.lastDay = today
+    await this.saveSettings()
+    if (!auto) { new Notice(`Added ${picks.length} highlight${picks.length === 1 ? '' : 's'} to ${daily.basename}`); await this.app.workspace.getLeaf(false).openFile(daily) }
   }
 
   /** Kindle-style Vocabulary Builder → Spaced Repetition-compatible cards (`word::definition`). */

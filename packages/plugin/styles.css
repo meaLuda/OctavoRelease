@@ -74,6 +74,7 @@
   position: absolute; z-index: 20;
   background: var(--background-primary); border: 1px solid var(--background-modifier-border);
   border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2); padding: 8px 10px;
+  max-width: calc(100% - 16px); box-sizing: border-box; /* a narrow pane (split view): the tools wrap instead of running off the edge */
   animation: octavo-pop 140ms var(--octavo-ease);
 }
 @keyframes octavo-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } }
@@ -86,7 +87,7 @@
 .octavo-reader button.octavo-swatch:hover { transform: scale(1.12); }
 .octavo-reader button.octavo-swatch.is-active { box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--text-normal); }
 .octavo-popover-colors .octavo-icon-btn { width: 28px; height: 28px; border-radius: 50%; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-.octavo-popover-tools { display: flex; justify-content: center; gap: 0; border-top: 1px solid var(--background-modifier-border); padding-top: 6px; }
+.octavo-popover-tools { display: flex; flex-wrap: wrap; justify-content: center; gap: 0; border-top: 1px solid var(--background-modifier-border); padding-top: 6px; }
 .octavo-reader button.octavo-tool {
   display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 8px; min-width: 54px; height: auto;
   background: transparent !important; box-shadow: none !important; border: none;
@@ -638,3 +639,110 @@ body.is-phone:not(.octavo-immersive) .octavo-tts-bar { bottom: calc(var(--navbar
 .octavo-tix.is-phone .octavo-tix-qr { display: none; }
 .octavo-tix.is-phone .octavo-tix-stamp { right: 14px; }
 @media (prefers-reduced-motion: reduce) { .octavo-tix-stub, .octavo-tix-u::after { transition: none; } }
+
+/* ───────── reading comfort: dimmer, ruler ───────── */
+.octavo-dim { position: absolute; inset: 0; background: #000; opacity: var(--octavo-dim, 0); pointer-events: none; z-index: 30; }
+/* Reading ruler. Shading uses the theme's own ink (warm on Sepia/Paper, near black on dark themes).
+   It glides between lines; with Reduce Motion it moves at once; with Increase Contrast its edges get stronger. */
+.octavo-ruler {
+  position: absolute; inset: 0; pointer-events: none; z-index: 6;
+  --ruler-ink: var(--octavo-fg, var(--text-normal));
+  --ruler-shade: color-mix(in srgb, var(--ruler-ink) calc(var(--ruler-dark, 0.25) * 100%), transparent);
+  --ruler-glide: top .12s cubic-bezier(.2, .7, .2, 1), height .12s cubic-bezier(.2, .7, .2, 1);
+}
+.octavo-dark .octavo-ruler { --ruler-ink: #000; --ruler-shade: color-mix(in srgb, #000 calc(var(--ruler-dark, 0.25) * 160%), transparent); }
+.octavo-ruler > div { position: absolute; left: 0; right: 0; transition: var(--ruler-glide); }
+.octavo-ruler-above { top: 0; height: var(--ruler-top, 30%); background: var(--ruler-shade); }
+.octavo-ruler-below { top: calc(var(--ruler-top, 30%) + var(--ruler-h, 34px)); bottom: 0; background: var(--ruler-shade); }
+.octavo-ruler-band { top: var(--ruler-top, 30%); height: var(--ruler-h, 34px); }
+.octavo-ruler .octavo-ruler-below { transition: top .12s cubic-bezier(.2, .7, .2, 1); }
+/* Spotlight (lightbox): the line clear, the rest dimmed */
+.octavo-ruler[data-style="lightbox"] .octavo-ruler-band { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ruler-ink) 38%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--ruler-ink) 38%, transparent); }
+.octavo-dark .octavo-ruler[data-style="lightbox"] .octavo-ruler-band { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(255, 255, 255, 0.14); }
+/* Shade: only what is above (already read) */
+.octavo-ruler[data-style="shade"] .octavo-ruler-below,
+.octavo-ruler[data-style="bar"] .octavo-ruler-above, .octavo-ruler[data-style="bar"] .octavo-ruler-below,
+.octavo-ruler[data-style="underline"] .octavo-ruler-above, .octavo-ruler[data-style="underline"] .octavo-ruler-below { display: none; }
+/* Bar: a soft tint of the theme's text colour over the line */
+.octavo-ruler[data-style="bar"] .octavo-ruler-band { left: 8px; right: 8px; border-radius: 6px; background: color-mix(in srgb, var(--octavo-fg, var(--text-normal)) calc(var(--ruler-dark, 0.25) * 55%), transparent); }
+/* Underline: a line under the line, in the accent colour */
+.octavo-ruler[data-style="underline"] .octavo-ruler-band { border-bottom: 2px solid color-mix(in srgb, var(--interactive-accent) 80%, transparent); }
+/* drag handle (phones and tablets): 22 pt to see, 44 pt to touch */
+.octavo-ruler .octavo-ruler-handle {
+  left: auto; right: 6px; width: 22px; height: 44px; border-radius: 11px;
+  top: calc(var(--ruler-top, 30%) + var(--ruler-h, 34px) / 2 - 22px);
+  background: var(--interactive-accent); opacity: 0.85; pointer-events: auto; touch-action: none; transition: top .12s cubic-bezier(.2, .7, .2, 1);
+}
+.octavo-ruler .octavo-ruler-handle::before { content: ''; position: absolute; inset: -6px -11px; }
+/* sliding with the pointer or a finger: no glide, it moves with you like a ruler on paper */
+.octavo-ruler.is-free > div, .octavo-ruler.is-free .octavo-ruler-handle { transition: none; }
+@media (prefers-reduced-motion: reduce) { .octavo-ruler > div, .octavo-ruler .octavo-ruler-handle { transition: none; } }
+@media (prefers-contrast: more) {
+  .octavo-ruler[data-style="lightbox"] .octavo-ruler-band { box-shadow: inset 0 2px 0 var(--ruler-ink), inset 0 -2px 0 var(--ruler-ink); }
+  .octavo-ruler[data-style="bar"] .octavo-ruler-band { outline: 2px solid var(--octavo-fg, var(--text-normal)); }
+  .octavo-ruler[data-style="underline"] .octavo-ruler-band { border-bottom-width: 3px; border-bottom-color: var(--interactive-accent); }
+}
+
+/* ───────── footnote pop-up ───────── */
+.octavo-footnote {
+  position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 25;
+  width: min(560px, calc(100% - 32px)); max-height: 45%; display: flex; flex-direction: column;
+  background: var(--background-primary); color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border); border-radius: 12px; box-shadow: var(--shadow-l); overflow: hidden;
+}
+.octavo-footnote-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--background-modifier-border); }
+.octavo-footnote-go { font-size: var(--font-ui-smaller); }
+.octavo-footnote-body { flex: 1; min-height: 90px; position: relative; }
+.octavo-footnote-body > * { position: absolute; inset: 0; }
+
+/* ───────── flip-through peek ───────── */
+.octavo-peek { position: absolute; inset: 0; z-index: 28; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.35); padding: 16px; }
+.octavo-peek-card {
+  display: flex; flex-direction: column; gap: 10px; width: min(520px, 100%); height: min(720px, 100%);
+  background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 14px; box-shadow: var(--shadow-l); padding: 12px;
+}
+.octavo-peek-head { display: flex; align-items: baseline; gap: 10px; }
+.octavo-peek-label { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.octavo-peek-detail { flex: 1; min-width: 0; color: var(--text-muted); font-size: var(--font-ui-smaller); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.octavo-peek-preview { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; background: var(--background-secondary); }
+.octavo-peek-view { position: absolute; inset: 0; pointer-events: none; }
+.octavo-peek-page { max-width: 100%; max-height: 100%; box-shadow: var(--shadow-s); }
+.octavo-peek input[type='range'].octavo-peek-slider { width: 100%; max-width: none; flex: none; margin: 0; }
+.octavo-peek-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ───────── search options ───────── */
+.octavo-search-opts { margin: 6px 0 2px; }
+.octavo-search-section { display: flex; justify-content: space-between; gap: 8px; }
+.octavo-search-count { color: var(--text-faint); font-weight: normal; font-variant-numeric: tabular-nums; }
+
+/* ───────── recap banner ───────── */
+.octavo-recap-banner { gap: 10px; }
+
+/* ───────── quote card ───────── */
+.octavo-quote-styles { margin-bottom: 10px; }
+.octavo-quote-canvas { display: block; width: 100%; max-width: 360px; height: auto; margin: 0 auto 12px; border-radius: 8px; box-shadow: var(--shadow-s); }
+
+/* ───────── reading stats ───────── */
+.octavo-stats { padding: 20px 24px 40px; max-width: 900px; margin: 0 auto; }
+.octavo-stats-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.octavo-stats-tile { background: var(--background-secondary); border-radius: 10px; padding: 12px 14px; }
+.octavo-stats-value { font-size: 1.35em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.octavo-stats-label { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.octavo-heat-wrap { overflow-x: auto; padding-bottom: 6px; --cell: 11px; --gap: 3px; }
+.octavo-heat-months { display: grid; grid-auto-flow: column; grid-auto-columns: var(--cell); gap: var(--gap); font-size: 10px; color: var(--text-faint); white-space: nowrap; height: 14px; }
+.octavo-heat { display: grid; grid-template-rows: repeat(7, var(--cell)); grid-auto-flow: column; grid-auto-columns: var(--cell); gap: var(--gap); width: max-content; }
+.octavo-heat-cell { width: var(--cell); height: var(--cell); border-radius: 2px; background: var(--background-modifier-border); }
+.octavo-heat-cell.is-l1 { background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border)); }
+.octavo-heat-cell.is-l2 { background: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border)); }
+.octavo-heat-cell.is-l3 { background: color-mix(in srgb, var(--interactive-accent) 78%, var(--background-modifier-border)); }
+.octavo-heat-cell.is-l4 { background: var(--interactive-accent); }
+.octavo-heat-cell.is-future { visibility: hidden; }
+.octavo-heat-legend { display: flex; align-items: center; gap: var(--gap); justify-content: flex-end; font-size: 10px; color: var(--text-faint); margin-top: 6px; }
+.octavo-heat-legend span { margin: 0 4px; }
+.octavo-stats-books { display: flex; flex-direction: column; gap: 6px; }
+.octavo-stats-book { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) 6.5em; /* a fixed time column: every bar starts at the same place */ align-items: center; gap: 10px; }
+.octavo-stats-book-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.octavo-stats-book-name.is-link { cursor: pointer; color: var(--text-accent); }
+.octavo-stats-bar { height: 8px; border-radius: 4px; background: var(--interactive-accent); width: var(--w, 0%); opacity: 0.8; }
+.octavo-stats-book-time { color: var(--text-muted); text-align: right; font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 500px) { .octavo-stats { padding: 14px 16px 30px; } .octavo-stats-book { grid-template-columns: minmax(0, 1fr) auto; } .octavo-stats-bar { grid-column: 1 / -1; } }

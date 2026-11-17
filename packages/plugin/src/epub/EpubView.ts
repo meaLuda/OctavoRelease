@@ -10,7 +10,13 @@ import {
 import type OctavoPlugin from '../main'
 import { BOOK_EXTENSIONS, type Backlink } from '../library/BookLibrary'
 import { ReaderChrome, SelectionPopover, SidePanel, el, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
-import { renderAppearance, resolveLook } from '../reader/appearance'
+import { renderAppearance, resolveLook, forBook, lineWidthPx } from '../reader/appearance'
+import { AwakeKeeper, Dimmer, Ruler, mergeTextLines, textRects } from '../reader/comfort'
+import { FootnotePopup } from '../reader/footnotes'
+import { Peek } from '../reader/peek'
+import { offerRecap } from '../reader/recapBanner'
+import { wordAt, isDoubleTap, isPageTurnKey } from '../reader/dom'
+import { savedSummaries, type RecapInput } from '../ai/hosted'
 import { bookCss } from '../reader/themes'
 import { sanitizeSection, indexText, rangeFromOffsets, rangeRectInHost, hasSelection, offsetOf } from '../reader/dom'
 import { COLOR_CSS } from '../reader/colors'
@@ -56,6 +62,18 @@ export class EpubView extends FileView {
   private lastSelection: { range: Range; index: number } | null = null
   /** Tag filter in the highlights panel (lower-case), kept while the book is open. */
   private tagFilter = new Set<string>()
+  private dimmer!: Dimmer
+  private ruler!: Ruler
+  private awake!: AwakeKeeper
+  private footnotes!: FootnotePopup
+  private peek!: Peek
+  /** Search options (kept while the book is open). */
+  private searchOpts = { whole: false, matchCase: false, chapter: false }
+  /** Phones: a single tap waits briefly so a second tap can make it a double tap (Define). */
+  private lastTap: { t: number; x: number; y: number } | null = null
+  private tapTimer = 0
+  /** last-read before this session (for the "Story so far" offer) */
+  private lastReadBefore = ''
 
   constructor(leaf: WorkspaceLeaf, private plugin: OctavoPlugin) {
     super(leaf)
@@ -88,8 +106,23 @@ export class EpubView extends FileView {
     }, () => this.plugin.settings.autoHideMs, visible => this.setImmersive(!visible))
     this.popover = new SelectionPopover(this.root)
     this.panel = new SidePanel(this.root, (tab, body) => this.renderPanel(tab, body))
+    this.ruler = new Ruler(this.root)
+    this.ruler.setSource(() => this.textLines())
+    this.dimmer = new Dimmer(this.root)
+    this.footnotes = new FootnotePopup(this.root, () => this.lastCss?.css ?? '', href => void this.followLink(href))
+    this.peek = new Peek(this.root)
+    this.awake = new AwakeKeeper(() => this.containerEl.doc, () => this.plugin.settings.keepAwake,
+      () => this.ready && this.app.workspace.getActiveViewOfType(EpubView) === this)
+    this.register(() => this.awake.release())
+    this.chrome.progressBar.addEventListener('click', e => { e.stopPropagation(); this.openPeek() })
     this.root.addEventListener('keydown', e => this.onKey(e))
-    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (document.hidden) void this.savePosition(true) })
+    // page-turner remotes and keyboards: keys still turn pages when focus sits outside the book (a toolbar, the tab header)
+    this.registerDomEvent(this.containerEl.doc, 'keydown', e => {
+      if (e.defaultPrevented || this.root.contains(e.target as Node) || this.app.workspace.getActiveViewOfType(EpubView) !== this) return
+      if ((e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable], .modal-container')) return
+      this.onKey(e)
+    })
+    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (document.hidden) void this.savePosition(true); else this.awake.onVisible() })
     this.registerEvent(this.app.workspace.on('css-change', () => this.applyLook()))
     this.registerEvent(this.app.workspace.on('active-leaf-change', l => { if (l !== this.leaf) this.containerEl.doc.body.removeClass('octavo-immersive') }))
     this.registerEvent(this.app.metadataCache.on('resolved', () => this.refreshBacklinks()))
@@ -105,6 +138,7 @@ export class EpubView extends FileView {
 
   async onLoadFile(file: TFile): Promise<void> {
     await this.plugin.ready
+    if (this.handOff(file)) return
     this.ready = false
     this.stage.empty()
     const loading = el('div', 'octavo-loading', this.stage, 'Opening…')
@@ -125,6 +159,7 @@ export class EpubView extends FileView {
 
       this.note = await this.plugin.library.ensureNote(file, { id: this.bookId, title: this.title, author, format: file.extension, language: meta.language as string | undefined })
       const props = this.plugin.library.getProps(this.note)
+      this.lastReadBefore = typeof props['last-read'] === 'string' ? props['last-read'] : ''
       if (!props.cover) {
         try {
           const cover = await book.getCover?.()
@@ -158,6 +193,8 @@ export class EpubView extends FileView {
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
       void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size })
+      this.offerRecap(typeof props.progress === 'number' ? props.progress : 0)
+      this.awake.poke()
     } catch (e) {
       console.error('Octavo: failed to open book', e)
       loading.setText(`Could not open this book: ${(e as Error).message ?? e}`)
@@ -183,6 +220,9 @@ export class EpubView extends FileView {
 
   private async closeBook() {
     this.stopAutoScroll()
+    this.awake?.release()
+    this.footnotes?.hide()
+    this.peek?.hide()
     this.speaker?.stop()
     this.speaker = null
     if (this.ready) {
@@ -201,12 +241,43 @@ export class EpubView extends FileView {
   }
 
   /** Deep links: `[[book.epub#cfi=…]]` open here. */
+  /** Leaf this view gave the book to (the book was already open there); deep links follow it. */
+  private handedOffTo: WorkspaceLeaf | null = null
+
+  /** Opened from the file explorer, a link or a restored layout while another tab already shows this book: show that tab instead and close this one. */
+  private handOff(file: TFile): boolean {
+    const open = this.plugin.switchToOpenReader(file, this.leaf)
+    if (!open) return false
+    this.handedOffTo = open
+    window.setTimeout(() => this.leaf.detach(), 50)
+    return true
+  }
+
   setEphemeralState(state: unknown): void {
+    if (this.handedOffTo) { this.handedOffTo.setEphemeralState(state); return }
     super.setEphemeralState?.(state)
     const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
     if (!this.ready) { this.pendingSubpath = sub; return }
     void this.navigateSubpath(sub)
+  }
+
+  /** Lines of text on screen now (for the reading ruler), across the visible section frames. */
+  private textLines() {
+    const view = this.root.getBoundingClientRect()
+    const rects: Array<{ top: number; bottom: number }> = []
+    for (const c of this.foliate?.renderer?.getContents?.() ?? []) {
+      const fr = c.doc?.defaultView?.frameElement?.getBoundingClientRect()
+      if (fr && c.doc.body) rects.push(...textRects(c.doc.body, view, fr.left, fr.top))
+    }
+    return mergeTextLines(rects, view.top, view.bottom)
+  }
+
+  /** Follow an in-book link (from a footnote pop-up), offering the way back. */
+  private async followLink(href: string) {
+    const from = this.loc?.cfi
+    await this.foliate?.goTo(href)
+    if (from) this.offerBack(from)
   }
 
   private async navigateSubpath(sub: string) {
@@ -248,6 +319,8 @@ export class EpubView extends FileView {
       window.open(e.detail.href, '_blank')
     })
     view.addEventListener('link', e => {
+      // a footnote reference opens in a pop-up (the jump is cancelled)
+      if (this.plugin.settings.footnotePopups && this.book && this.footnotes.handle(this.book, e, href => void this.followLink(href))) return
       const from = this.loc?.cfi
       if (from) window.setTimeout(() => this.offerBack(from), 300)
     })
@@ -268,7 +341,7 @@ export class EpubView extends FileView {
 
   private applyLook() {
     if (!this.foliate?.renderer) return
-    const s = this.plugin.settings
+    const s = forBook(this.plugin.settings, this.bookId)
     const look = resolveLook(s, this.containerEl.doc.body.hasClass('theme-dark'))
     const obsidianFont = getComputedStyle(document.body).getPropertyValue('--font-text').trim()
     const r = this.foliate.renderer
@@ -283,7 +356,8 @@ export class EpubView extends FileView {
     if (this.lastCss?.r !== r || this.lastCss.css !== css) { this.lastCss = { r, css }; r.setStyles?.(css); this.holdPlaceWhileFontsLoad(r) }
     attr('flow', s.flow)
     attr('gap', '6%')
-    attr('max-inline-size', '720px')
+    // about 55, 66 or 80 characters a line at this text size (see Line width)
+    attr('max-inline-size', `${lineWidthPx(s.lineWidth, look.typo.fontSize)}px`)
     attr('max-column-count', String(look.typo.maxColumns))
     const narrow = this.root.clientWidth < 520
     const m = `${narrow ? Math.min(look.typo.margin, 22) : look.typo.margin}px`
@@ -300,6 +374,8 @@ export class EpubView extends FileView {
     this.root.setCssProps({ '--octavo-fg': look.colors.fg })
     this.root.toggleClass('octavo-dark', look.dark)
     this.root.dataset.theme = s.theme
+    this.dimmer.set(s.dim)
+    this.ruler.set(s.ruler, { style: s.rulerStyle, lines: s.rulerLines, darkness: s.rulerDarkness }, 16 * (look.typo.fontSize / 100) * look.typo.lineHeight)
     this.updateFooter()
   }
 
@@ -324,7 +400,7 @@ export class EpubView extends FileView {
     doc.addEventListener('mousemove', (e: MouseEvent) => {
       // The book lives in an iframe: tell the reader bar where the pointer is, in window coordinates.
       const fr = doc.defaultView?.frameElement?.getBoundingClientRect()
-      if (fr) this.chrome.pointerAt(fr.left + e.clientX, fr.top + e.clientY)
+      if (fr) { this.chrome.pointerAt(fr.left + e.clientX, fr.top + e.clientY); this.ruler.pointerAt(fr.top + e.clientY) }
       const t = performance.now()
       if (t - hoverAt < 250) return
       hoverAt = t
@@ -345,6 +421,22 @@ export class EpubView extends FileView {
     const rr = this.root.getBoundingClientRect()
     const x = (fr ? fr.left + e.clientX : e.clientX) - rr.left
     const y = (fr ? fr.top + e.clientY : e.clientY) - rr.top
+    this.awake.poke()
+    if (Platform.isMobile && this.plugin.settings.doubleTapDefine) {
+      // a second tap on the same spot defines the word there; a single tap waits a moment to be sure
+      const now = performance.now()
+      if (isDoubleTap(this.lastTap, { t: now, x, y })) {
+        window.clearTimeout(this.tapTimer)
+        this.lastTap = null
+        const w = wordAt(doc, e.clientX, e.clientY)
+        if (w) { doc.getSelection()?.removeAllRanges(); doc.getSelection()?.addRange(w.range); void this.plugin.define(w.word, this.contextOf(w.range)) }
+        return
+      }
+      this.lastTap = { t: now, x, y }
+      window.clearTimeout(this.tapTimer)
+      this.tapTimer = window.setTimeout(() => this.tapAt(x / rr.width, y / rr.height), 260)
+      return
+    }
     this.tapAt(x / rr.width, y / rr.height)
   }
 
@@ -367,11 +459,22 @@ export class EpubView extends FileView {
   }
 
   private onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement)?.closest?.('input, textarea, select, .octavo-panel')) return
+    if ((e.target as HTMLElement)?.closest?.('input, textarea, select, .octavo-panel, .octavo-peek')) return
     const k = e.key
     const sel = this.lastSelection
-    if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); void this.foliate?.goLeft() }
-    else if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) { e.preventDefault(); void this.foliate?.goRight() }
+    const paged = this.plugin.settings.flow !== 'scrolled'
+    this.awake.poke()
+    if (k === 'Escape' && (this.footnotes.visible || this.peek.visible)) { this.footnotes.hide(); this.peek.hide(); return }
+    // reading ruler: up and down move it a line; at the page edge the page turns
+    if ((k === 'ArrowDown' || k === 'ArrowUp') && this.ruler.on && !e.shiftKey) {
+      e.preventDefault()
+      const dir = k === 'ArrowDown' ? 1 : -1
+      if (!this.ruler.step(dir)) void (dir > 0 ? this.foliate?.next() : this.foliate?.prev())
+      return
+    }
+    // page turners (Bluetooth clickers send arrows, page keys or Space; on phones some send media keys)
+    if (isPageTurnKey(k, 'back', paged, Platform.isMobile)) { e.preventDefault(); void this.foliate?.goLeft() }
+    else if (isPageTurnKey(k, 'forward', paged, Platform.isMobile) || (k === ' ' && !e.shiftKey)) { e.preventDefault(); void this.foliate?.goRight() }
     else if (k === ' ' && e.shiftKey) { e.preventDefault(); void this.foliate?.goLeft() }
     else if (k === 'Escape') { if (!this.popover.visible && !this.panel.isOpen) this.focusMode.exit(); this.popover.hide(); this.panel.close(); this.stopAutoScroll() }
     else if ((k === 'h' || k === 'H') && sel) { e.preventDefault(); void this.createHighlight(sel, this.plugin.settings.defaultColor, 'highlight') }
@@ -390,6 +493,11 @@ export class EpubView extends FileView {
     this.pageEnter = now
     this.pageChars = detail.range?.toString().length ?? 0
     this.loc = { ...detail, index: detail.section?.current }
+    // a page turn starts the ruler on its first line (a ruler step back past the top lands on the last line);
+    // a relayout (new size, font or width) keeps it where it was
+    const turned = detail.reason === 'page' || detail.reason === 'snap' || detail.reason === 'navigation'
+    this.ruler.invalidate(turned && this.plugin.settings.flow !== 'scrolled' ? 1 : 0)
+    this.awake.poke()
     this.updateFooter()
     this.chrome.setBookmarked(this.isBookmarked())
     window.clearTimeout(this.saveTimer)
@@ -511,6 +619,8 @@ export class EpubView extends FileView {
       ask: () => { void this.plugin.ask(range.toString(), this.contextOf(range), this.title, this.loc?.fraction ?? 0) },
       summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { this.speakText(range.toString()) },
+      translate: () => { this.popover.hide(); void this.plugin.translate(range.toString(), this.title) },
+      card: () => { this.popover.hide(); this.plugin.quoteCard(range.toString(), this.title, this.note) },
     })
   }
 
@@ -536,6 +646,74 @@ export class EpubView extends FileView {
     if (!body) return null
     const text = (body.innerText || body.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
     return { title: this.loc?.tocItem?.label?.trim() || `${this.title}, section ${(cur.index ?? 0) + 1}`, text }
+  }
+
+  /**
+   * "Story so far" input: only what the reader has passed. The current section up to the page shown (and the end of
+   * the one before when that is short), saved chapter summaries, and highlights before this place.
+   */
+  async recapInput(): Promise<RecapInput | null> {
+    const loc = this.loc
+    if (!this.book || !loc?.cfi) return null
+    const idx = loc.index ?? 0
+    let recent = ''
+    const body = this.foliate?.renderer?.getContents?.().find(c => c.index === idx)?.doc?.body
+    if (body && loc.range) {
+      const ti = indexText(body)
+      recent = ti.text.slice(0, offsetOf(ti, loc.range.endContainer, loc.range.endOffset))
+    }
+    if (recent.length < 6000 && idx > 0) {
+      try {
+        const prev = await this.book.sections[idx - 1]?.createDocument?.()
+        const t = (prev?.body?.textContent ?? '').replace(/\s+/g, ' ').trim()
+        if (t) recent = `${t.slice(-8000)}\n\n${recent}`
+      } catch { /* previous section unreadable: the current one is enough */ }
+    }
+    recent = recent.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+    const before = (cfi?: string) => { try { return !!cfi && CFI.compare(cfi, loc.cfi) < 0 } catch { return false } }
+    const highlights = [...this.highlights.values()].filter(h => before(h.anchor.cfi))
+      .sort((a, b) => CFI.compare(a.anchor.cfi!, b.anchor.cfi!)).map(h => h.anchor.quote.exact)
+    const summaries = this.note ? savedSummaries(await this.app.vault.cachedRead(this.note)) : []
+    return { recent, highlights, summaries, bookTitle: this.title, position: loc.fraction ?? 0 }
+  }
+
+  /** Back after a break: offer the story so far (Settings → Reading → "Offer a recap after"). */
+  private offerRecap(progress: number) {
+    offerRecap(this.root, { afterDays: this.plugin.settings.recapAfterDays, lastRead: this.lastReadBefore, progress, aiReady: this.plugin.aiAvailable(), run: () => void this.plugin.recap(this) })
+  }
+
+  /** Page Flip-style peek: a second view of the book scrubs anywhere while this page stays put. */
+  openPeek() {
+    const book = this.book
+    if (!book || !this.foliate) return
+    let pv: View | null = null
+    let at: { cfi?: string; label?: string } = {}
+    this.peek.open({
+      min: 0, max: 1000, value: Math.round((this.loc?.fraction ?? 0) * 1000),
+      label: v => `${Math.round(v / 10)}%`,
+      show: async (v, host) => {
+        if (!pv) {
+          pv = createEl(tag('foliate-view'))
+          pv.addClass('octavo-peek-view')
+          host.replaceChildren(pv)
+          pv.addEventListener('relocate', e => { at = { cfi: e.detail.cfi, label: e.detail.tocItem?.label?.trim() } })
+          await pv.open(book)
+          const r = pv.renderer
+          r.setAttribute('no-preload', '')
+          r.setAttribute('flow', 'paginated'); r.setAttribute('max-column-count', '1')
+          r.setAttribute('margin-top', '18px'); r.setAttribute('margin-bottom', '18px')
+          r.setStyles?.(this.lastCss?.css ?? '')
+        }
+        await pv.goToFraction(v / 1000)
+        return at.label ?? ''
+      },
+      go: v => {
+        const from = this.loc?.cfi
+        void (at.cfi ? this.foliate!.goTo(at.cfi) : this.foliate!.goToFraction(v / 1000))
+        if (from) this.offerBack(from)
+      },
+      dispose: () => { try { pv?.close() } catch { /* ignore */ } pv?.remove(); pv = null },
+    })
   }
 
   /** Highlights in book order of creation: quote plus the reader's note. */
@@ -614,6 +792,8 @@ export class EpubView extends FileView {
       define: () => { void this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact) },
       ask: () => { void this.plugin.ask(h.anchor.quote.exact, h.anchor.quote.exact, this.title, this.loc?.fraction ?? 0) },
       speak: () => this.speakText(h.anchor.quote.exact),
+      translate: () => { this.popover.hide(); void this.plugin.translate(h.anchor.quote.exact, this.title) },
+      card: () => { this.popover.hide(); this.plugin.quoteCard(h.anchor.quote.exact, this.title, this.note) },
       remove: () => void this.removeHighlight(h),
       openInNote: () => void this.openInNote(h),
     }, { color: h.color, underline: h.style === 'underline' })
@@ -735,8 +915,13 @@ export class EpubView extends FileView {
   private async toggleSpeak() {
     if (this.speaker?.active) { this.speaker.stop(); this.chrome.setSpeaking(false); return }
     await this.foliate!.initTTS('word', undefined, (range: Range) => {
-      // highlight the spoken word and keep it on screen
+      // highlight the spoken word and keep it on screen; the reading ruler follows the line
       void this.foliate!.renderer.scrollToAnchor?.(range, true)
+      window.setTimeout(() => {
+        const fr = range.startContainer.ownerDocument?.defaultView?.frameElement?.getBoundingClientRect()
+        const r = range.getBoundingClientRect()
+        if (fr && r.height) this.ruler.follow(fr.top + r.top, fr.top + r.bottom)
+      }, 80)
     })
     const t = this.plugin.settings.tts
     this.speaker = t.engine === 'cloud' && this.plugin.cloud.signedIn
@@ -774,6 +959,8 @@ export class EpubView extends FileView {
     m.addItem(i => i.setTitle(this.focusMode.active ? 'Exit focus mode' : 'Focus mode (full screen)').setIcon(this.focusMode.active ? 'minimize' : 'maximize').onClick(() => this.focusMode.toggle()))
     if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
+    m.addItem(i => i.setTitle('Flip through pages').setIcon('book-open').onClick(() => this.openPeek()))
+    m.addItem(i => i.setTitle('Story so far').setIcon('history').onClick(() => void this.plugin.recap(this)))
     m.addItem(i => i.setTitle('Export highlights to note').setIcon('file-output').onClick(() => this.file && void this.plugin.exportHighlights(this.file)))
     m.addItem(i => i.setTitle(this.autoScroll ? 'Stop auto-scroll' : 'Auto-scroll').setIcon('arrow-down-wide-narrow').onClick(() => this.toggleAutoScroll()))
     m.addItem(i => i.setTitle('Go to percentage…').setIcon('percent').onClick(async () => {
@@ -788,7 +975,7 @@ export class EpubView extends FileView {
   }
 
   private renderPanel(tab: PanelTab, body: HTMLElement) {
-    if (tab === 'appearance') return renderAppearance(body, this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() })
+    if (tab === 'appearance') return renderAppearance(body, forBook(this.plugin.settings, this.bookId), this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() }, { bookId: this.bookId })
     if (tab === 'toc') return this.renderToc(body)
     if (tab === 'highlights') return this.renderHighlights(body)
     if (tab === 'search') return this.renderSearch(body)
@@ -872,12 +1059,22 @@ export class EpubView extends FileView {
   private renderSearch(body: HTMLElement) {
     const input = el('input', 'octavo-search-input', body)
     input.type = 'search'; input.placeholder = 'Search this book'; input.value = this.searchState.query
+    const opts = el('div', 'octavo-hl-chips octavo-search-opts', body)
+    const chip = (label: string, key: keyof typeof this.searchOpts) => {
+      const b = el('button', `octavo-chip${this.searchOpts[key] ? ' is-active' : ''}`, opts, label)
+      b.setAttribute('aria-pressed', String(this.searchOpts[key]))
+      b.onclick = () => { this.searchOpts[key] = !this.searchOpts[key]; b.toggleClass('is-active', this.searchOpts[key]); b.setAttribute('aria-pressed', String(this.searchOpts[key])); if (input.value.trim()) void run() }
+    }
+    chip('Whole words', 'whole')
+    chip('Match case', 'matchCase')
+    chip('This chapter', 'chapter')
     const status = el('div', 'octavo-search-status', body)
     const list = el('div', 'octavo-search-results', body)
     const show = () => {
       list.empty()
       for (const r of this.searchState.results) {
-        el('div', 'octavo-search-section', list, r.label || '')
+        const head = el('div', 'octavo-search-section', list, r.label || '')
+        el('span', 'octavo-search-count', head, String(r.subitems.length))
         for (const it of r.subitems) {
           const row = el('div', 'octavo-search-hit', list)
           el('span', '', row, it.excerpt.pre)
@@ -887,6 +1084,7 @@ export class EpubView extends FileView {
         }
       }
     }
+    const labels = this.sectionLabels()
     const run = async () => {
       const query = input.value.trim()
       this.foliate!.clearSearch?.()
@@ -894,17 +1092,38 @@ export class EpubView extends FileView {
       list.empty()
       if (!query) { status.setText(''); return }
       status.setText('Searching…')
+      const o = this.searchOpts
+      const index = o.chapter ? this.loc?.index : undefined
+      const here = { label: this.loc?.tocItem?.label?.trim() || 'This chapter', subitems: [] as Array<{ cfi: string; excerpt: { pre: string; match: string; post: string } }> }
       let n = 0
-      for await (const r of this.foliate!.search({ query })) {
+      for await (const r of this.foliate!.search({ query, matchWholeWords: o.whole, matchCase: o.matchCase, ...(index != null ? { index } : {}) })) {
         if (this.searchState.query !== query) return
         if (r === 'done') break
-        if (r.subitems) { this.searchState.results.push(r); n += r.subitems.length; show(); status.setText(`${n} result${n === 1 ? '' : 's'}…`) }
+        if (r.subitems) { this.searchState.results.push({ label: r.label || labels.get(r.index ?? -1) || '', subitems: r.subitems }); n += r.subitems.length }
+        else if ('cfi' in r && r.excerpt) { // one chapter: results come one by one
+          if (!here.subitems.length) this.searchState.results.push(here)
+          here.subitems.push({ cfi: r.cfi, excerpt: r.excerpt }); n++
+        } else continue
+        show(); status.setText(`${n} result${n === 1 ? '' : 's'}…`)
       }
-      status.setText(n ? `${n} result${n === 1 ? '' : 's'}` : 'No results')
+      status.setText(n ? `${n} result${n === 1 ? '' : 's'}${index != null ? ' in this chapter' : ''}` : 'No results')
     }
     input.addEventListener('keydown', e => { if (e.key === 'Enter') void run() })
     show()
     window.setTimeout(() => input.focus())
+  }
+
+  /** Section index → its table-of-contents label (first entry that points into it). */
+  private sectionLabels(): Map<number, string> {
+    const out = new Map<number, string>()
+    const add = (items: TocItem[] | null | undefined) => {
+      for (const it of items ?? []) {
+        try { const r = this.foliate!.resolveNavigation(it.href!); if (r && !out.has(r.index)) out.set(r.index, (it.label ?? '').trim()) } catch { /* ignore */ }
+        add(it.subitems)
+      }
+    }
+    add(this.book?.toc)
+    return out
   }
 
   /** KOReader-style Book Map: one bar per section, sized by length, with progress and highlight marks. */

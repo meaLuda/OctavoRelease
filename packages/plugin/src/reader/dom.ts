@@ -75,3 +75,53 @@ export const hasSelection = (doc: Document) => {
   const s = doc.getSelection()
   return !!s && s.rangeCount > 0 && !s.isCollapsed && s.toString().trim().length > 0
 }
+
+/** Two taps close in time (350 ms) and place (30 px) make a double tap. */
+export function isDoubleTap(prev: { t: number; x: number; y: number } | null, next: { t: number; x: number; y: number }): boolean {
+  return !!prev && next.t - prev.t < 350 && Math.hypot(next.x - prev.x, next.y - prev.y) < 30
+}
+
+/** Word characters: letters, marks and digits in any script, plus inner apostrophes and hyphens. */
+const WORD = /[\p{L}\p{M}\p{N}]/u
+
+/** The word in `text` around `offset`, as [start, end), or null when `offset` is not on a word. */
+export function wordBounds(text: string, offset: number): [number, number] | null {
+  const isW = (i: number) => i >= 0 && i < text.length && (WORD.test(text[i]) || (/['’-]/.test(text[i]) && WORD.test(text[i - 1] ?? '') && WORD.test(text[i + 1] ?? '')))
+  let i = offset
+  if (!isW(i) && isW(i - 1)) i--
+  if (!isW(i)) return null
+  let a = i, b = i + 1
+  while (isW(a - 1)) a--
+  while (isW(b)) b++
+  return [a, b]
+}
+
+/** The word under a point in a book section (client coordinates of that document). */
+export function wordAt(doc: Document, x: number, y: number): { word: string; range: Range } | null {
+  type CaretDoc = Document & { caretPositionFromPoint?(x: number, y: number): { offsetNode: Node; offset: number } | null }
+  const pos = (doc as CaretDoc).caretPositionFromPoint?.(x, y)
+  const r = pos ? null : doc.caretRangeFromPoint?.(x, y)
+  const node = pos?.offsetNode ?? r?.startContainer, offset = pos?.offset ?? r?.startOffset ?? 0
+  if (!node || node.nodeType !== Node.TEXT_NODE) return null
+  const text = (node as Text).data
+  const b = wordBounds(text, offset)
+  if (!b) return null
+  const range = doc.createRange()
+  range.setStart(node, b[0]); range.setEnd(node, b[1])
+  return { word: text.slice(b[0], b[1]), range }
+}
+
+/**
+ * Keys that turn a page `back` or `forward`: arrows (up and down only on paged layouts), Page Up and Down,
+ * and on phones the media track keys some Bluetooth page turners send. Space is handled by each reader.
+ */
+export function isPageTurnKey(key: string, dir: 'back' | 'forward', paged: boolean, mobile = false): boolean {
+  const back = key === 'ArrowLeft' || key === 'PageUp' || (paged && key === 'ArrowUp') || (mobile && key === 'MediaTrackPrevious')
+  const fwd = key === 'ArrowRight' || key === 'PageDown' || (paged && key === 'ArrowDown') || (mobile && key === 'MediaTrackNext')
+  return dir === 'back' ? back : fwd
+}
+
+/** The match at `i` (length `n`) in `text` starts and ends at word boundaries (any script). */
+export function wholeWordAt(text: string, i: number, n: number): boolean {
+  return !WORD.test(text[i - 1] ?? '') && !WORD.test(text[i + n] ?? '')
+}

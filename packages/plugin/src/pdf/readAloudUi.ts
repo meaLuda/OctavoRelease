@@ -17,6 +17,8 @@ export interface ReadAloudHost {
   /** First page of each top-level outline entry. */
   sections(): number[]
   setSpeaking(on: boolean): void
+  /** The first span of each sentence as it is read (the reading ruler follows it). */
+  onSpoken?(span: HTMLElement): void
 }
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2]
@@ -170,6 +172,7 @@ export class PdfReadAloudUi {
     }
     if (!follow) return
     const first = this.lit[0]
+    if (first) this.host.onSpoken?.(first)
     if (!first) { if (this.host.currentPage() !== page) this.host.goToPage(page); return }
     const box = first.getBoundingClientRect(), view = this.host.root.getBoundingClientRect()
     if (box.top < view.top + 60 || box.bottom > view.bottom - 90) first.scrollIntoView({ block: 'center', behavior: 'smooth' })

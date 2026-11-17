@@ -1,4 +1,4 @@
-import { DEFAULT_TYPOGRAPHY, type OctavoSettings, type ThemeId, type Typography, type FontChoice } from '../settings'
+import { DEFAULT_TYPOGRAPHY, type OctavoSettings, type ThemeId, type Typography, type FontChoice, type LineWidth, type RulerStyle } from '../settings'
 import { THEMES, type ResolvedLook, nightLightFactor } from './themes'
 import { el } from './ui'
 import type { ResolvedLayout } from '../pdf/layout'
@@ -11,19 +11,69 @@ export function resolveLook(s: OctavoSettings, obsidianDark: boolean): ResolvedL
   const dark = s.theme === 'black' || (s.appearance === 'auto' ? obsidianDark : s.appearance === 'dark')
   const typo = themeTypography(s)
   let colors = { ...(dark ? preset.dark : preset.light) }
-  if (s.nightLight && !dark) {
+  // dark themes: softer text on request (bright text on a dark page glows, worst with astigmatism)
+  if (dark && s.darkContrast < 100) colors = { ...colors, fg: mix(colors.fg, colors.bg, Math.max(60, s.darkContrast) / 100) }
+  if (s.nightLight) {
     const k = nightLightFactor()
-    // warm the theme's own colour (less blue, a little less green) so themes stay distinct at night
-    if (k > 0) colors = { ...colors, bg: warm(colors.bg, k) }
+    // warm the theme's own colour (less blue, a little less green) so themes stay distinct at night;
+    // in dark themes the text is what gives light, so it is warmed there
+    if (k > 0) colors = dark ? { ...colors, fg: warm(colors.fg, k * 1.6) } : { ...colors, bg: warm(colors.bg, k) }
   }
   return { colors, typo, dark }
 }
 
-/** Text size always applies; the other overrides only while "Customize" is on (Apple Books behaviour). */
+/** `a` blended towards `b`: k = 1 keeps `a`, k = 0 gives `b`. */
+export function mix(a: string, b: string, k: number): string {
+  const rgb = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+  const [x, y] = [rgb(a), rgb(b)]
+  return '#' + x.map((v, i) => Math.round(v * k + y[i] * (1 - k)).toString(16).padStart(2, '0')).join('')
+}
+
+/** What each ruler style does (shown under the style picker). */
+const RULER_NOTES: Record<RulerStyle, string> = {
+  lightbox: 'Clears the line you are on and dims the rest of the page.',
+  shade: 'Dims only what you have already read, above the line.',
+  bar: 'Tints the line you are on and leaves the page as it is.',
+  underline: 'Draws a line under the one you are on.',
+}
+
+/** Characters per line for each line width; `full` uses the whole page. */
+export const LINE_CHARS: Record<LineWidth, number> = { narrow: 55, medium: 66, wide: 80, full: 0 }
+
+/** The page's longest line in px for foliate's max-inline-size: about LINE_CHARS characters at this text size. */
+export function lineWidthPx(width: LineWidth, fontSize: number): number {
+  const chars = LINE_CHARS[width] ?? LINE_CHARS.medium
+  // a book face averages about half an em per character, spaces included; the page base is 16px
+  return chars ? Math.round(chars * 0.5 * 16 * (fontSize / 100)) : 4000
+}
+
+/** The theme's typography; its overrides only while "Customize" is on (Apple Books behaviour). Text size is the same in every theme. */
 export function themeTypography(s: OctavoSettings): Typography {
   const preset = THEMES[s.theme] ?? THEMES.original
   const o = s.overrides[s.theme] ?? {}
-  return { ...DEFAULT_TYPOGRAPHY, ...preset.typography, ...(s.customize ? o : {}), ...(o.fontSize ? { fontSize: o.fontSize } : {}) }
+  return { ...DEFAULT_TYPOGRAPHY, ...preset.typography, ...(s.customize ? o : {}), fontSize: s.textSize || 100 }
+}
+
+/**
+ * The settings as one book sees them: its own theme once a theme was chosen inside it, else the default theme.
+ * Choosing a theme in a book's Appearance panel is remembered for that book only.
+ */
+export function forBook(s: OctavoSettings, bookId: string): OctavoSettings {
+  if (!bookId) return s
+  return new Proxy(s, {
+    get: (t, k): unknown => {
+      if (k === 'theme') return t.bookThemes[bookId] ?? t.theme
+      // a text size kept for this book only (see "This book only" in Appearance)
+      if (k === 'textSize') return t.bookTextSizes[bookId] ?? t.textSize
+      return Reflect.get(t, k)
+    },
+    set: (t, k, v) => {
+      if (k === 'theme') t.bookThemes[bookId] = v as ThemeId
+      else if (k === 'textSize' && bookId in t.bookTextSizes) t.bookTextSizes[bookId] = v as number
+      else Reflect.set(t, k, v)
+      return true
+    },
+  })
 }
 
 /** Night-light warmth: scale blue down by up to 18% and green by up to 5%, keeping each theme's character. */
@@ -40,7 +90,7 @@ const FONT_LABELS: Array<[FontChoice, string]> = [
 ]
 
 /** Renders the Appearance panel. The page itself is the preview: every change applies live. */
-export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianDark: boolean, apply: () => void, opts: { pdf?: boolean; pdfLayout?: PdfLayoutControl } = {}): void {
+export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianDark: boolean, apply: () => void, opts: { pdf?: boolean; pdfLayout?: PdfLayoutControl; bookId?: string } = {}): void {
   const save = () => { apply() }
   const section = (title: string) => { const d = el('div', 'octavo-ap-section', body); el('div', 'octavo-ap-title', d, title); return d }
 
@@ -78,8 +128,20 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
     const minus = el('button', '', g, 'A−'); minus.setAttribute('aria-label', 'Smaller text')
     el('span', 'octavo-ap-value', g, `${t.fontSize}%`)
     const plus = el('button', '', g, 'A+'); plus.setAttribute('aria-label', 'Larger text')
-    minus.onclick = () => { setTypo({ fontSize: Math.max(60, t.fontSize - 10) }); save(); rerender() }
-    plus.onclick = () => { setTypo({ fontSize: Math.min(250, t.fontSize + 10) }); save(); rerender() }
+    minus.onclick = () => { s.textSize = Math.max(60, t.fontSize - 10); save(); rerender() }
+    plus.onclick = () => { s.textSize = Math.min(250, t.fontSize + 10); save(); rerender() }
+    const id = opts.bookId
+    if (id) {
+      // small-print PDFs or books set in large type: a size for this book only, the others keep theirs
+      const own = row(general, 'Size for this book only')
+      const ownToggle = el('div', `checkbox-container${id in s.bookTextSizes ? ' is-enabled' : ''}`, own)
+      ownToggle.setAttribute('aria-label', 'Keep this text size for this book only')
+      ownToggle.onclick = () => {
+        if (id in s.bookTextSizes) delete s.bookTextSizes[id]
+        else s.bookTextSizes[id] = t.fontSize
+        save(); rerender()
+      }
+    }
     if (!opts.pdf) {
       seg(row(general, 'Layout'), [['paginated', 'Pages'], ['scrolled', 'Scroll']], s.flow, v => (s.flow = v))
       seg(row(general, 'Page turn'), [['slide', 'Slide'], ['none', 'None'], ['curl', 'Curl']], s.pageEffect, v => (s.pageEffect = v))
@@ -113,6 +175,34 @@ export function renderAppearance(body: HTMLElement, s: OctavoSettings, obsidianD
   const nlToggle = el('div', `checkbox-container${s.nightLight ? ' is-enabled' : ''}`, nl)
   nlToggle.onclick = () => { s.nightLight = !s.nightLight; save(); rerender() }
   if (s.nightLight && nightLightFactor() > 0) el('div', 'octavo-ap-note', general).setText('Warming the page now (evening hours). Themes keep their colours, just warmer.')
+
+  const comfort = section('Comfort')
+  const textLike = !opts.pdf || s.pdfMode === 'text'
+  if (textLike) seg(row(comfort, 'Line width'), [['narrow', 'Narrow'], ['medium', 'Medium'], ['wide', 'Wide'], ['full', 'Full']] as Array<[LineWidth, string]>, s.lineWidth, v => (s.lineWidth = v))
+  const range = (label: string, min: number, max: number, step: number, value: number, fmt: (v: number) => string, set: (v: number) => void, aria: string) => {
+    const c = row(comfort, label)
+    const input = el('input', 'slider', c)
+    input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(value)
+    input.setAttribute('aria-label', aria)
+    const v = el('span', 'octavo-ap-value', c, fmt(value))
+    input.oninput = () => { v.textContent = fmt(Number(input.value)); set(Number(input.value)); save() }
+  }
+  range('Dim', 0, 0.7, 0.05, s.dim, v => (v ? `${Math.round(v * 100)}%` : 'Off'), v => (s.dim = v), 'Dim the page below the lowest screen brightness')
+  const darkNow = s.theme === 'black' || (s.appearance === 'auto' ? obsidianDark : s.appearance === 'dark')
+  if (darkNow) range('Dark text', 60, 100, 5, s.darkContrast, v => `${v}%`, v => (s.darkContrast = v), 'Text strength in dark themes')
+  const toggle = (label: string, on: boolean, flip: () => void, aria: string) => {
+    const tg = el('div', `checkbox-container${on ? ' is-enabled' : ''}`, row(comfort, label))
+    tg.setAttribute('aria-label', aria)
+    tg.onclick = () => { flip(); save(); rerender() }
+  }
+  toggle('Reading ruler', s.ruler, () => (s.ruler = !s.ruler), 'A band that marks the line you are reading')
+  if (s.ruler) {
+    seg(row(comfort, 'Ruler style'), [['lightbox', 'Spotlight'], ['shade', 'Shade'], ['bar', 'Bar'], ['underline', 'Underline']] as Array<[RulerStyle, string]>, s.rulerStyle, v => (s.rulerStyle = v))
+    el('div', 'octavo-ap-note', comfort).setText(RULER_NOTES[s.rulerStyle])
+    seg(row(comfort, 'Ruler lines'), [['1', 'One'], ['3', 'Three']] as Array<['1' | '3', string]>, String(s.rulerLines) as '1' | '3', v => (s.rulerLines = v === '3' ? 3 : 1))
+    if (s.rulerStyle !== 'underline') range('Ruler shade', 0.1, 0.6, 0.05, s.rulerDarkness, v => `${Math.round(v * 100)}%`, v => (s.rulerDarkness = v), 'How dark the reading ruler is')
+  }
+  toggle('Keep screen on', s.keepAwake, () => (s.keepAwake = !s.keepAwake), 'Keep the screen on while reading')
 
   if (opts.pdf && s.pdfMode !== 'text') return
 

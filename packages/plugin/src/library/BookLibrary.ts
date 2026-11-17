@@ -4,7 +4,7 @@ import {
   HIGHLIGHTS_HEADING, type Highlight, type ParsedHighlight, type Subpath,
 } from '@octavo/shared'
 import type { OctavoSettings } from '../settings'
-import { groupDuplicates, mergeHighlightBlocks, mergeProps, type NoteInfo } from './dedupe'
+import { groupDuplicates, mergeHighlightBlocks, mergeProps, propText, type NoteInfo } from './dedupe'
 
 export interface RepairResult { groups: number; removed: number; highlights: number; links: number }
 
@@ -377,6 +377,8 @@ export class BookLibrary {
     if (s.minutes < 1) return
     const day = moment().format('YYYY-MM-DD')
     settings.stats.minutesByDay[day] = (settings.stats.minutesByDay[day] ?? 0) + s.minutes
+    const id = s.note ? propText(this.getProps(s.note)['octavo-id'] ?? '') : ''
+    if (id) settings.stats.minutesByBook[id] = (settings.stats.minutesByBook[id] ?? 0) + s.minutes
     if (!settings.dailyNoteLog) return
     const daily = await this.dailyNote()
     if (!daily) return
@@ -394,7 +396,8 @@ export class BookLibrary {
     })
   }
 
-  private async dailyNote(): Promise<TFile | null> {
+  /** Today's daily note (core Daily notes format and folder), created when missing. */
+  async dailyNote(): Promise<TFile | null> {
     // Read the core Daily notes options when available; fall back to YYYY-MM-DD at the vault root.
     type Internal = { internalPlugins?: { getPluginById?(id: string): { instance?: { options?: { format?: string; folder?: string } } } | null } }
     const opts = (this.app as App & Internal).internalPlugins?.getPluginById?.('daily-notes')?.instance?.options ?? {}

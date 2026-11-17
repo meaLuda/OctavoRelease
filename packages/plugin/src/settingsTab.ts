@@ -34,7 +34,7 @@ export class OctavoSettingTab extends PluginSettingTab {
     renderLibrarySettings(c, this.plugin, () => this.render())
 
     new Setting(c).setName('Reading').setHeading()
-    new Setting(c).setName('Theme').addDropdown(d => {
+    new Setting(c).setName('Default theme').setDesc('For books you have not picked a theme in. A theme picked inside a book stays with that book.').addDropdown(d => {
       for (const [id, t] of Object.entries(THEMES)) d.addOption(id, t.name)
       d.setValue(s.theme).onChange(v => { s.theme = v as typeof s.theme; save() })
     })
@@ -54,6 +54,19 @@ export class OctavoSettingTab extends PluginSettingTab {
       .addText(t => t.setPlaceholder('Fonts/AtkinsonHyperlegible.ttf').setValue(s.customFontPath).onChange(v => { s.customFontPath = v.trim(); save() }))
     new Setting(c).setName('Auto-scroll speed').setDesc('Pixels per second.')
       .addSlider(sl => sl.setLimits(10, 200, 5).setValue(s.autoScrollSpeed).onChange(v => { s.autoScrollSpeed = v; save() }))
+    new Setting(c).setName('Footnote pop-ups').setDesc('Tap a footnote mark to read the note where you are, instead of jumping to it.')
+      .addToggle(t => t.setValue(s.footnotePopups).onChange(v => { s.footnotePopups = v; save() }))
+    new Setting(c).setName('Double-tap to define').setDesc('On phones and tablets, double-tap a word to look it up.')
+      .addToggle(t => t.setValue(s.doubleTapDefine).onChange(v => { s.doubleTapDefine = v; save() }))
+    new Setting(c).setName('Translate into').setDesc('Language that the selection menu translates into. Leave empty for your device language.')
+      .addText(t => t.setPlaceholder('Device language').setValue(s.translateTo).onChange(v => { s.translateTo = v.trim(); save() }))
+    new Setting(c).setName('Offer a recap after').setDesc('Back in a book after this many days, Octavo offers a recap of the story so far (needs AI). Set to 0 to turn it off.')
+      .addSlider(sl => sl.setLimits(0, 30, 1).setValue(s.recapAfterDays).onChange(v => { s.recapAfterDays = v; save() }))
+
+    new Setting(c).setName('Daily highlights').setHeading()
+    new Setting(c).setName('Add highlights to the daily note').setDesc('Once a day, a few highlights from your books are embedded in today\'s daily note under its own heading.')
+      .addToggle(t => t.setValue(s.dailyHighlights.enabled).onChange(v => { s.dailyHighlights.enabled = v; save() }))
+    new Setting(c).setName('How many').addSlider(sl => sl.setLimits(1, 10, 1).setValue(s.dailyHighlights.count).onChange(v => { s.dailyHighlights.count = v; save() }))
 
     new Setting(c).setName('Highlights').setHeading()
     new Setting(c).setName('Default colour').addDropdown(d => {

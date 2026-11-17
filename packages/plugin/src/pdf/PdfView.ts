@@ -7,7 +7,12 @@ import {
 import type OctavoPlugin from '../main'
 import type { Backlink } from '../library/BookLibrary'
 import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
-import { renderAppearance, resolveLook } from '../reader/appearance'
+import { renderAppearance, resolveLook, forBook, LINE_CHARS } from '../reader/appearance'
+import { AwakeKeeper, Dimmer, Ruler, mergeTextLines, textRects } from '../reader/comfort'
+import { Peek } from '../reader/peek'
+import { offerRecap } from '../reader/recapBanner'
+import { isPageTurnKey, wholeWordAt } from '../reader/dom'
+import { savedSummaries, type RecapInput } from '../ai/hosted'
 import { fontStack } from '../reader/themes'
 import { COLOR_CSS } from '../reader/colors'
 import { Speaker } from '../reader/speech'
@@ -68,6 +73,14 @@ export class PdfView extends FileView {
   private panel!: SidePanel
   private note: TFile | null = null
   private bookId = ''
+  private dimmer!: Dimmer
+  private ruler!: Ruler
+  private awake!: AwakeKeeper
+  private peek!: Peek
+  /** last-read before this session (for the "Story so far" offer) */
+  private lastReadBefore = ''
+  /** Search options (kept while the PDF is open). */
+  private searchOpts = { whole: false, matchCase: false, chapter: false }
   private title = ''
   private outline: Array<{ title: string; page: number; depth: number }> = []
   private highlights = new Map<string, ParsedHighlight>()
@@ -131,11 +144,28 @@ export class PdfView extends FileView {
     this.chrome = new ReaderChrome(this.root, {
       toc: () => this.panel.open('toc'), search: () => this.panel.open('search'), highlights: () => this.panel.open('highlights'),
       bookmark: () => void this.toggleBookmark(), appearance: () => this.panel.open('appearance'), speak: () => this.speakPage(),
-      more: e => this.moreMenu(e), prev: () => this.turnSide('left'), next: () => this.turnSide('right'), footerTap: () => this.panel.open('map'),
+      more: e => this.moreMenu(e), prev: () => this.turnSide('left'), next: () => this.turnSide('right'), footerTap: () => this.cycleFooter(),
     }, () => this.plugin.settings.autoHideMs, visible => this.setImmersive(!visible))
     this.buildScrubber()
     this.popover = new SelectionPopover(this.root)
     this.panel = new SidePanel(this.root, (t, b) => this.renderPanel(t, b))
+    this.ruler = new Ruler(this.root)
+    this.ruler.setSource(() => this.textLines())
+    this.container.addEventListener('scroll', () => this.ruler.invalidate(), { passive: true })
+    this.textView.addEventListener('scroll', () => this.ruler.invalidate(), { passive: true })
+    this.dimmer = new Dimmer(this.root)
+    this.peek = new Peek(this.root)
+    this.awake = new AwakeKeeper(() => this.containerEl.doc, () => this.plugin.settings.keepAwake,
+      () => this.ready && this.app.workspace.getActiveViewOfType(PdfView) === this)
+    this.register(() => this.awake.release())
+    this.root.addEventListener('mousemove', e => this.ruler.pointerAt(e.clientY))
+    this.root.addEventListener('pointerdown', () => this.awake.poke())
+    // page-turner remotes and keyboards: keys still turn pages when focus sits outside the PDF (a toolbar, the tab header)
+    this.registerDomEvent(this.containerEl.doc, 'keydown', e => {
+      if (e.defaultPrevented || this.root.contains(e.target as Node) || this.app.workspace.getActiveViewOfType(PdfView) !== this) return
+      if ((e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable], .modal-container')) return
+      this.onKey(e)
+    })
     this.container.addEventListener('pointerup', () => window.setTimeout(() => this.checkSelection(), Platform.isMobile ? 350 : 60))
     this.container.addEventListener('click', e => this.onClick(e))
     // ctrl/cmd+wheel; a trackpad pinch arrives as ctrl+wheel with small deltas
@@ -157,7 +187,7 @@ export class PdfView extends FileView {
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
     this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
-    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.stopAutoScroll(); void this.savePosition() } })
+    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.stopAutoScroll(); void this.savePosition() } else this.awake.onVisible() })
     // auto-scroll holds while a finger or button is down (touch, click, selecting text)
     this.root.addEventListener('pointerdown', () => { this.pointerHeld = true })
     this.registerDomEvent(this.containerEl.doc, 'pointerup', () => { this.pointerHeld = false })
@@ -174,6 +204,7 @@ export class PdfView extends FileView {
 
   async onLoadFile(file: TFile) {
     await this.plugin.ready
+    if (this.handOff(file)) return
     this.ready = false
     const loading = el('div', 'octavo-loading', this.root, 'Opening…')
     try {
@@ -205,6 +236,7 @@ export class PdfView extends FileView {
       await this.loadHighlights()
       this.refreshBacklinks()
       const props = this.plugin.library.getProps(this.note)
+      this.lastReadBefore = typeof props['last-read'] === 'string' ? props['last-read'] : ''
       if (!props.cover) void this.saveCover()
       loading.remove()
       const saved = this.plugin.settings.pdfLayouts[this.layoutKey()]
@@ -217,6 +249,8 @@ export class PdfView extends FileView {
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
       void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size, isStub: this.isStub })
+      this.offerRecap(typeof props.progress === 'number' ? props.progress : 0)
+      this.awake.poke()
     } catch (e) {
       console.error('Octavo: failed to open PDF', e)
       loading.setText(`Could not open this PDF: ${(e as Error).message ?? e}`)
@@ -754,6 +788,8 @@ export class PdfView extends FileView {
 
   private async closeDoc() {
     this.stopAutoScroll()
+    this.awake?.release()
+    this.peek?.hide()
     if (this.ready) { await this.savePosition(); await this.logSession() }
     this.ready = false
     this.viewer?.cleanup?.()
@@ -777,7 +813,20 @@ export class PdfView extends FileView {
     this.chrome?.destroy()
   }
 
+  /** Leaf this view gave the book to (the book was already open there); deep links follow it. */
+  private handedOffTo: WorkspaceLeaf | null = null
+
+  /** Opened from the file explorer, a link or a restored layout while another tab already shows this book: show that tab instead and close this one. */
+  private handOff(file: TFile): boolean {
+    const open = this.plugin.switchToOpenReader(file, this.leaf)
+    if (!open) return false
+    this.handedOffTo = open
+    window.setTimeout(() => this.leaf.detach(), 50)
+    return true
+  }
+
   setEphemeralState(state: unknown) {
+    if (this.handedOffTo) { this.handedOffTo.setEphemeralState(state); return }
     super.setEphemeralState?.(state)
     const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
@@ -869,7 +918,7 @@ export class PdfView extends FileView {
    * to darken (smart keeps the theme's dark colours, sepia, or Original = never darken this PDF).
    */
   private pageLook(): { dark: boolean; colors: { background: string; foreground: string; photoDim: number } | null; key: string } {
-    const s = this.plugin.settings
+    const s = forBook(this.plugin.settings, this.bookId)
     const look = resolveLook(s, this.containerEl.doc.body.hasClass('theme-dark'))
     let colors: { background: string; foreground: string; photoDim: number } | null = null
     if (look.dark) {
@@ -927,7 +976,73 @@ export class PdfView extends FileView {
       ask: () => void this.askAbout(range.toString()),
       summarise: () => { this.popover.hide(); void this.plugin.summarise(range.toString(), this.title) },
       speak: () => { const got = this.selectionToPdf(); this.popover.hide(); if (got) { this.containerEl.doc.getSelection()?.removeAllRanges(); void this.readAloud().play(got.sel.page, got.sel.beginIndex, got.sel.beginOffset) } else Speaker.say(range.toString(), this.plugin.settings.tts) },
+      translate: () => { this.popover.hide(); void this.plugin.translate(range.toString(), this.title) },
+      card: () => { this.popover.hide(); this.plugin.quoteCard(joinCopiedLines(range.toString()), this.title, this.note) },
     })
+  }
+
+  /** Lines of text on screen now (for the reading ruler): the Text view, or the pages' text layers. */
+  private textLines() {
+    const view = this.root.getBoundingClientRect()
+    if (this.mode === 'text') return mergeTextLines(textRects(this.textView, view), view.top, view.bottom)
+    const rects: Array<{ top: number; bottom: number }> = []
+    for (const page of Array.from(this.container.querySelectorAll('.page'))) {
+      const pr = page.getBoundingClientRect()
+      if (pr.bottom < view.top || pr.top > view.bottom) continue
+      for (const span of Array.from(page.querySelectorAll('.textLayer span'))) {
+        const r = span.getBoundingClientRect()
+        if (r.width > 1 && r.right > view.left && r.left < view.right) rects.push({ top: r.top, bottom: r.bottom })
+      }
+    }
+    // a scanned page has no text layer: the ruler keeps a plain band
+    return rects.length ? mergeTextLines(rects, view.top, view.bottom) : null
+  }
+
+  /** Back after a break: offer the story so far (Settings → Reading → "Offer a recap after"). */
+  private offerRecap(progress: number) {
+    offerRecap(this.root, { afterDays: this.plugin.settings.recapAfterDays, lastRead: this.lastReadBefore, progress, aiReady: this.plugin.aiAvailable(), run: () => void this.plugin.recap(this) })
+  }
+
+  /** Page Flip-style peek: scrub to any page and see it, while the page you are on stays put. */
+  openPeek() {
+    const doc = this.doc
+    if (!doc) return
+    let task: { cancel(): void } | null = null
+    this.peek.open({
+      min: 1, max: doc.numPages, value: this.page,
+      label: v => `Page ${pageLabel(this.labels, v)} of ${doc.numPages}`,
+      show: async (v, host) => {
+        task?.cancel()
+        const page = await doc.getPage(v)
+        const one = page.getViewport({ scale: 1 })
+        const scale = Math.min((host.clientWidth || 320) / one.width, (host.clientHeight || 420) / one.height) * (window.devicePixelRatio || 1)
+        const vp = page.getViewport({ scale })
+        const c = createEl('canvas', { cls: 'octavo-peek-page' })
+        c.width = Math.floor(vp.width); c.height = Math.floor(vp.height)
+        const t = page.render({ canvasContext: c.getContext('2d')!, viewport: vp })
+        task = t
+        try { await t.promise } catch { return }
+        host.replaceChildren(c)
+        return this.chapterOf(v)?.title ?? ''
+      },
+      go: v => { const from = this.page; this.goToPage(v); if (from !== v) this.offerBack(from) },
+      dispose: () => task?.cancel(),
+    })
+  }
+
+  /** "Story so far" input: the pages up to this one (about 12k characters), saved chapter summaries, highlights so far. */
+  async recapInput(): Promise<RecapInput | null> {
+    if (!this.doc) return null
+    const parts: string[] = []
+    let len = 0
+    for (let p = this.page; p >= 1 && len < 12_000; p--) {
+      const { text } = this.pageString(await this.pageItems(p))
+      parts.unshift(text); len += text.length
+    }
+    const highlights = [...this.highlights.values()].filter(h => (h.anchor.pdf?.page ?? Infinity) <= this.page)
+      .sort((a, b) => (a.anchor.pdf?.page ?? 0) - (b.anchor.pdf?.page ?? 0)).map(h => h.anchor.quote.exact)
+    const summaries = this.note ? savedSummaries(await this.app.vault.cachedRead(this.note)) : []
+    return { recent: parts.join('\n\n').trim(), highlights, summaries, bookTitle: this.title, position: this.fraction() }
   }
 
   // ───── for AI features (summarise chapter, flashcards) ─────
@@ -1152,6 +1267,8 @@ export class PdfView extends FileView {
       define: () => void this.plugin.define(h.anchor.quote.exact, h.anchor.quote.exact),
       ask: () => void this.askAbout(h.anchor.quote.exact),
       speak: () => { this.popover.hide(); Speaker.say(h.anchor.quote.exact, this.plugin.settings.tts) },
+      translate: () => { this.popover.hide(); void this.plugin.translate(h.anchor.quote.exact, this.title) },
+      card: () => { this.popover.hide(); this.plugin.quoteCard(h.anchor.quote.exact, this.title, this.note) },
       remove: detach(async () => { this.popover.hide(); this.highlights.delete(h.id); this.redrawAll(); if (this.note) await this.plugin.library.deleteHighlight(this.note, h.id) }),
       openInNote: () => { this.popover.hide(); if (this.note) void this.app.workspace.openLinkText(`${this.note.path}#^oct-${h.id}`, '', 'split') },
     }, { color: h.color, underline: h.style === 'underline' })
@@ -1291,6 +1408,9 @@ export class PdfView extends FileView {
     if (this.viewer && this.darkKey !== look.key) { this.darkKey = look.key; this.viewer.refresh() }
     this.styleTextView()
     this.setMode(s.pdfMode)
+    this.dimmer.set(s.dim)
+    const t = resolveLook(forBook(s, this.bookId), false).typo
+    this.ruler.set(s.ruler, { style: s.rulerStyle, lines: s.rulerLines, darkness: s.rulerDarkness }, this.mode === 'text' ? 16 * 1.15 * (t.fontSize / 100) * t.lineHeight : 26)
     this.updateFooter()
   }
 
@@ -1311,7 +1431,7 @@ export class PdfView extends FileView {
   }
 
   private styleTextView() {
-    const look = resolveLook(this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'))
+    const look = resolveLook(forBook(this.plugin.settings, this.bookId), this.containerEl.doc.body.hasClass('theme-dark'))
     const t = look.typo
     const obsidianFont = getComputedStyle(this.containerEl.doc.body).getPropertyValue('--font-text').trim()
     const keep = this.mode === 'text' ? this.textPlace() : null
@@ -1321,7 +1441,9 @@ export class PdfView extends FileView {
     st.setProperty('--tv-font', fontStack(t.font === 'publisher' ? 'serif' : t.font, obsidianFont) ?? 'serif')
     st.setProperty('--tv-size', `${(t.fontSize / 100) * 1.15}em`)
     st.setProperty('--tv-lh', String(t.lineHeight))
-    st.setProperty('--tv-measure', `${Math.max(28, 40 - t.margin / 8)}em`)
+    // line width in characters (about half an em each): Narrow 55, Medium 66, Wide 80, Full
+    const chars = LINE_CHARS[this.plugin.settings.lineWidth] ?? LINE_CHARS.medium
+    st.setProperty('--tv-measure', chars ? `${chars / 2}em` : '100%')
     st.setProperty('--tv-align', t.justify ? 'justify' : 'start')
     st.setProperty('--tv-hyphens', t.hyphenate ? 'auto' : 'manual')
     // A new font or size reflows the text: keep the same spot of the same page at the top, again once fonts load.
@@ -1464,8 +1586,19 @@ export class PdfView extends FileView {
 
   private fraction() { return this.doc ? (this.page - 1) / Math.max(1, this.doc.numPages - 1) : 0 }
 
+  /** Tap on the footer: chapter → time left → page and percent. The page grid is the button next to the slider. */
+  private cycleFooter() {
+    const order = ['chapter', 'time', 'book'] as const
+    const s = this.plugin.settings
+    const i = order.indexOf(s.footer as typeof order[number])
+    s.footer = order[(i + 1) % order.length]
+    void this.plugin.saveSettings()
+    this.updateFooter()
+  }
+
   private updateFooter() {
     if (!this.doc) return
+    this.awake?.poke()
     const total = this.doc.numPages
     const pct = Math.round(this.fraction() * 100)
     this.chrome.progressBar.setCssProps({ '--octavo-progress': `${this.fraction() * 100}%` })
@@ -1576,8 +1709,21 @@ export class PdfView extends FileView {
   }
 
   private onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest('input, textarea, select, .octavo-panel')) return
+    if ((e.target as HTMLElement).closest('input, textarea, select, .octavo-panel, .octavo-peek')) return
     const mod = e.metaKey || e.ctrlKey
+    this.awake.poke()
+    if (e.key === 'Escape' && this.peek.visible) { this.peek.hide(); return }
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && this.ruler.on && !mod && !e.shiftKey) {
+      e.preventDefault()
+      const dir = e.key === 'ArrowDown' ? 1 : -1
+      if (!this.ruler.step(dir)) this.turn(dir)
+      return
+    }
+    // page turners: up and down turn pages when pages turn one at a time; Bluetooth clickers on phones may send media keys
+    const paged = this.mode === 'pages' && this.layout.scroll === 'paged'
+    if (!mod && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key.startsWith('MediaTrack')) && isPageTurnKey(e.key, e.key === 'ArrowDown' || e.key === 'MediaTrackNext' ? 'forward' : 'back', paged, Platform.isMobile)) {
+      e.preventDefault(); this.turn(e.key === 'ArrowDown' || e.key === 'MediaTrackNext' ? 1 : -1); return
+    }
     if (this.autoRaf && e.key === ' ' && !mod) { e.preventDefault(); this.autoPaused = !this.autoPaused; new Notice(this.autoPaused ? 'Auto-scroll paused — Space resumes' : 'Auto-scroll resumed'); return }
     if (this.autoRaf && e.key === 'Escape' && !this.area.active) { e.preventDefault(); this.stopAutoScroll(); return }
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); this.turnSide(e.key === 'ArrowRight' ? 'right' : 'left') }
@@ -1629,6 +1775,7 @@ export class PdfView extends FileView {
       currentPage: () => this.page,
       sections: () => this.outline.filter(o => o.depth === 0).map(o => o.page),
       setSpeaking: on => this.chrome.setSpeaking(on),
+      onSpoken: span => window.setTimeout(() => { const r = span.getBoundingClientRect(); if (r.height) this.ruler.follow(r.top, r.bottom) }, 450),
     })
   }
 
@@ -1638,6 +1785,8 @@ export class PdfView extends FileView {
     if (canPopout()) m.addItem(i => i.setTitle('Read in new window').setIcon('picture-in-picture-2').onClick(() => this.file && void this.plugin.openInOctavo(this.file, this.app.workspace.openPopoutLeaf({ size: { width: 900, height: 1000 } }))))
     m.addItem(i => i.setTitle(this.mode === 'text' ? 'Page view' : 'Text view (reflow)').setIcon(this.mode === 'text' ? 'file' : 'align-left').onClick(() => { this.plugin.settings.pdfMode = this.mode === 'text' ? 'pages' : 'text'; void this.plugin.saveSettings(); this.applyLook() }))
     m.addItem(i => i.setTitle('Open book note').setIcon('file-text').onClick(() => this.note && besideLeaf(this.app).openFile(this.note)))
+    m.addItem(i => i.setTitle('Flip through pages').setIcon('book-open').onClick(() => this.openPeek()))
+    m.addItem(i => i.setTitle('Story so far').setIcon('history').onClick(() => void this.plugin.recap(this)))
     if (this.mode === 'pages') m.addItem(i => i.setTitle(this.area.active ? 'Cancel area selection' : 'Select area').setIcon('box-select').onClick(() => this.toggleAreaSelect()))
     m.addItem(i => i.setTitle('Export highlights to note').setIcon('file-output').onClick(() => this.file && void this.plugin.exportHighlights(this.file)))
     m.addItem(i => i.setTitle(this.autoRaf ? 'Stop auto-scroll' : 'Auto-scroll').setIcon('arrow-down-wide-narrow').onClick(() => this.toggleAutoScroll()))
@@ -1655,8 +1804,8 @@ export class PdfView extends FileView {
   }
 
   private renderPanel(tab: PanelTab, body: HTMLElement) {
-    if (tab === 'appearance') return renderAppearance(body, this.plugin.settings, this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() },
-      { pdf: true, pdfLayout: { get: () => this.layout, set: p => this.setLayout(p) } })
+    if (tab === 'appearance') return renderAppearance(body, forBook(this.plugin.settings, this.bookId), this.containerEl.doc.body.hasClass('theme-dark'), () => { this.applyLook(); void this.plugin.saveSettings() },
+      { pdf: true, pdfLayout: { get: () => this.layout, set: p => this.setLayout(p) }, bookId: this.bookId })
     if (tab === 'toc') {
       if (!this.outline.length) el('div', 'octavo-empty', body, 'This PDF has no outline.')
       const cur = this.chapterOf(this.page)
@@ -1699,18 +1848,32 @@ export class PdfView extends FileView {
   private renderSearch(body: HTMLElement) {
     const input = el('input', 'octavo-search-input', body)
     input.type = 'search'; input.placeholder = 'Search this PDF'
+    const opts = el('div', 'octavo-hl-chips octavo-search-opts', body)
+    const chip = (label: string, key: keyof typeof this.searchOpts) => {
+      const b = el('button', `octavo-chip${this.searchOpts[key] ? ' is-active' : ''}`, opts, label)
+      b.setAttribute('aria-pressed', String(this.searchOpts[key]))
+      b.onclick = () => { this.searchOpts[key] = !this.searchOpts[key]; b.toggleClass('is-active', this.searchOpts[key]); b.setAttribute('aria-pressed', String(this.searchOpts[key])); if (input.value.trim()) void run() }
+    }
+    chip('Whole words', 'whole')
+    chip('Match case', 'matchCase')
+    if (this.chapterOf(this.page)) chip('This chapter', 'chapter')
     const status = el('div', 'octavo-search-status', body)
     const list = el('div', 'octavo-search-results', body)
     let token = 0
     const run = async () => {
-      const q = input.value.trim().toLowerCase(), my = ++token
+      const o = this.searchOpts
+      const raw = input.value.trim(), my = ++token
+      const q = o.matchCase ? raw : raw.toLowerCase()
       list.empty()
       if (!q) return
+      const ch = o.chapter ? this.chapterOf(this.page) : null
+      const [from, to] = ch ? [ch.start, ch.end] : [1, this.doc!.numPages]
       let n = 0
-      for (let p = 1; p <= this.doc!.numPages && my === token; p++) {
+      for (let p = from; p <= to && my === token; p++) {
         const { text } = this.pageString(await this.pageItems(p))
-        const low = text.toLowerCase()
+        const low = o.matchCase ? text : text.toLowerCase()
         for (let i = low.indexOf(q); i >= 0 && n < 500; i = low.indexOf(q, i + q.length)) {
+          if (o.whole && !wholeWordAt(low, i, q.length)) continue
           n++
           const row = el('div', 'octavo-search-hit', list)
           el('span', 'octavo-toc-page', row, `p. ${p}`)
@@ -1723,9 +1886,9 @@ export class PdfView extends FileView {
             this.whenTextLayer(p, () => { const sel = this.anchorQuote(p, { id: '', color: 'yellow', style: 'highlight', created: '', lines: [0, 0], anchor: { quote } }); if (sel) this.flashSelection(sel) })
           }
         }
-        if (p % 10 === 0) status.setText(`Searching… page ${p} of ${this.doc!.numPages}`)
+        if (p % 10 === 0) status.setText(`Searching… page ${p} of ${to}`)
       }
-      if (my === token) status.setText(n ? `${n} result${n === 1 ? '' : 's'}` : 'No results')
+      if (my === token) status.setText(n ? `${n} result${n === 1 ? '' : 's'}${ch ? ` in ${ch.title}` : ''}` : 'No results')
     }
     input.addEventListener('keydown', e => { if (e.key === 'Enter') void run() })
     window.setTimeout(() => input.focus())

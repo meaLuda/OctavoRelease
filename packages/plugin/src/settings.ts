@@ -9,6 +9,9 @@ export type FontChoice = 'publisher' | 'obsidian' | 'serif' | 'sans' | 'charter'
 export type TapAction = 'prev' | 'next' | 'menu' | 'bookmark' | 'toc' | 'search' | 'none'
 export type FooterStyle = 'chapter' | 'book' | 'time' | 'off'
 export type PdfDark = 'invert-except-images' | 'sepia' | 'none'
+/** Longest line: about 55, 66 or 80 characters, or the whole width. */
+export type RulerStyle = 'lightbox' | 'shade' | 'bar' | 'underline'
+export type LineWidth = 'narrow' | 'medium' | 'wide' | 'full'
 
 export interface Typography {
   font: FontChoice
@@ -38,8 +41,39 @@ export interface OctavoSettings {
   theme: ThemeId
   appearance: Appearance
   customize: boolean
-  /** per-theme overrides of the theme's typography */
+  /** per-theme overrides of the theme's typography (text size is not one: it stays when the theme changes) */
   overrides: Partial<Record<ThemeId, Partial<Typography>>>
+  /** text size in percent, for every theme */
+  textSize: number
+  /** themes chosen inside a book, by book id; other books use `theme` */
+  bookThemes: Record<string, ThemeId>
+  /** text sizes kept for one book only, by book id; other books use `textSize` */
+  bookTextSizes: Record<string, number>
+  lineWidth: LineWidth
+  /** Black layer over the page, 0 (off) to 0.7: dimmer than the screen's lowest brightness. */
+  dim: number
+  /** Text strength in dark themes, 60 to 100 (%): lower is softer, less glow for astigmatism. */
+  darkContrast: number
+  /** Keep the screen on while a book is open and being read (released after 10 idle minutes). */
+  keepAwake: boolean
+  /** A band that marks the line being read. */
+  ruler: boolean
+  /** Ruler look (CHI 2023 reading-ruler study): Lightbox dims all but the line; Shade dims what you have read; Bar tints the line; Underline. */
+  rulerStyle: RulerStyle
+  /** Lines inside the ruler: one, or three with the current one in the middle. */
+  rulerLines: 1 | 3
+  /** How dark the shading (or the bar tint) is, 0.1–0.6. */
+  rulerDarkness: number
+  /** EPUB footnotes and endnotes open in a pop-up instead of jumping away. */
+  footnotePopups: boolean
+  /** Phones and tablets: double-tap a word to define it. */
+  doubleTapDefine: boolean
+  /** Translate selection into this language; empty = the device language. */
+  translateTo: string
+  /** Offer a "Story so far" recap when a book is reopened after this many days; 0 = never. */
+  recapAfterDays: number
+  /** A few highlights from your books in the daily note once a day. `shown`: highlight id → day last shown. */
+  dailyHighlights: { enabled: boolean; count: number; lastDay?: string; shown: Record<string, string> }
   customFontPath: string
   pageEffect: PageEffect
   flow: 'paginated' | 'scrolled'
@@ -60,7 +94,8 @@ export interface OctavoSettings {
   pdfLayoutVersion?: number
   dailyNoteLog: boolean
   goals: { enabled: boolean; dailyMinutes: number; yearlyBooks: number; restDaysPerWeek: number }
-  stats: { minutesByDay: Record<string, number>; finishedByYear: Record<string, number> }
+  /** minutesByBook: by book id (octavo-id), from 1.1.1 on */
+  stats: { minutesByDay: Record<string, number>; finishedByYear: Record<string, number>; minutesByBook: Record<string, number> }
   pace: unknown
   tts: { voice: string; rate: number; engine: 'system' | 'cloud'; cloudVoice: string }
   /**
@@ -110,6 +145,22 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   appearance: 'auto',
   customize: false,
   overrides: {},
+  textSize: 100,
+  bookThemes: {},
+  bookTextSizes: {},
+  lineWidth: 'medium',
+  dim: 0,
+  darkContrast: 100,
+  keepAwake: true,
+  ruler: false,
+  rulerStyle: 'lightbox',
+  rulerLines: 1,
+  rulerDarkness: 0.25,
+  footnotePopups: true,
+  doubleTapDefine: true,
+  translateTo: '',
+  recapAfterDays: 3,
+  dailyHighlights: { enabled: false, count: 3, shown: {} },
   customFontPath: '',
   pageEffect: 'slide',
   flow: 'paginated',
@@ -131,7 +182,7 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   pdfLayouts: {},
   dailyNoteLog: false,
   goals: { enabled: false, dailyMinutes: 15, yearlyBooks: 12, restDaysPerWeek: 1 },
-  stats: { minutesByDay: {}, finishedByYear: {} },
+  stats: { minutesByDay: {}, finishedByYear: {}, minutesByBook: {} },
   pace: null,
   tts: { voice: '', rate: 1, engine: 'system', cloudVoice: 'af_heart' },
   ai: { provider: 'none', apiKey: '', model: '', baseUrl: '', allowFallback: true },

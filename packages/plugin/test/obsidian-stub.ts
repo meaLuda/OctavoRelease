@@ -5,3 +5,4 @@ export const normalizePath = (p: string) => p.replace(/\/+/g, '/').replace(/^\/|
 export const moment = () => ({ format: () => '2026-10-05', valueOf: () => 0 })
 export const Platform = { isMobile: false, isPhone: false, isTablet: false, isDesktopApp: true, isMobileApp: false, isIosApp: false, isAndroidApp: false }
 export const loadPdfJs = async () => ({})
+export class Modal { app: unknown; constructor(app?: unknown) { this.app = app } }
