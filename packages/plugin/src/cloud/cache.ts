@@ -44,5 +44,6 @@ export const bookCache = {
     const all = await tx('readonly', s => s.getAll() as IDBRequest<Entry[]>)
     return { count: all.length, bytes: all.reduce((a, e) => a + e.size, 0) }
   },
+  async remove(id: string): Promise<void> { await tx('readwrite', s => s.delete(id)) },
   async clear(): Promise<void> { await tx('readwrite', s => s.clear()) },
 }

@@ -21,7 +21,7 @@ import { copyAs, copyCitation, type CopySource } from './reader/copy'
 import { OfflineDictionary } from './reader/dictionary'
 import { QuoteCardModal } from './reader/quoteCard'
 import { StatsView, STATS_VIEW } from './library/StatsView'
-import { dailySection, pickHighlights, recordShown } from './library/resurface'
+import { appendUnderHeading, dailySection, pickHighlights, recordShown } from './library/resurface'
 
 
 /** Octavo mark: an open book with a ribbon bookmark (100×100, currentColor, Lucide-weight strokes). */
@@ -64,7 +64,7 @@ export default class OctavoPlugin extends Plugin {
     this.ready = this.loadSettings()
     await this.ready
     this.pace = Pace.fromJSON(this.settings.pace)
-    this.library = new BookLibrary(this.app, () => this.settings)
+    this.library = new BookLibrary(this.app, () => this.settings, () => this.saveSettings())
     this.cloud = new CloudClient(this)
     this.cloud.watchLabels()
 
@@ -710,9 +710,7 @@ export default class OctavoPlugin extends Plugin {
 
   /** Appends a block under "## <heading>" (created at the end once; later blocks join the same section). */
   private async appendToNote(note: TFile, heading: string, block: string) {
-    const h = `\n## ${heading}\n\n`
-    const esc = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    await this.app.vault.process(note, md => `${md.replace(/\s+$/, '')}\n${h}${block}\n`.replace(new RegExp(`\\n## ${esc}\\n\\n([\\s\\S]*)\\n## ${esc}\\n\\n`), (_m, body: string) => `\n## ${heading}\n\n${body}\n`))
+    await this.app.vault.process(note, md => appendUnderHeading(md, heading, block))
   }
 
   /** "Copy & auto-paste": append the new highlight to the last markdown note being edited. */

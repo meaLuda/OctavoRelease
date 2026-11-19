@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { heatmap, heatLevel, hoursMinutes, totals } from '../src/library/stats'
-import { dailySection, pickHighlights, recordShown, RESHOW_AFTER_DAYS } from '../src/library/resurface'
+import { appendUnderHeading, dailySection, pickHighlights, recordShown, RESHOW_AFTER_DAYS } from '../src/library/resurface'
 import { DICT_MAX, dictKey, fromVocabulary, remember } from '../src/reader/dictionary'
 import { cardText, wrapLines } from '../src/reader/quoteCard'
 import { isDoubleTap, isPageTurnKey, wholeWordAt, wordBounds } from '../src/reader/dom'
@@ -182,5 +182,19 @@ describe('reading ruler lines', () => {
     const three = bandOver(lines, 1, 3)
     expect(three.top).toBeLessThan(100); expect(three.bottom).toBeGreaterThan(176)
     expect(bandOver(lines, 0, 3).top).toBeLessThan(100) // at the first line, three lines start there
+  })
+})
+
+describe('append under heading', () => {
+  it('adds the section at the end the first time', () => {
+    expect(appendUnderHeading('# Book\n\ntext\n', 'Ask', 'A1')).toBe('# Book\n\ntext\n\n## Ask\n\nA1\n')
+  })
+  it('a later block joins its own section and leaves sections after it alone', () => {
+    const md = '# Book\n\n## Ask\n\nA1\n\n## Chapter summaries\n\nS1\n'
+    expect(appendUnderHeading(md, 'Ask', 'A2')).toBe('# Book\n\n## Ask\n\nA1\n\nA2\n\n## Chapter summaries\n\nS1\n')
+    expect(appendUnderHeading(md, 'Chapter summaries', 'S2')).toBe('# Book\n\n## Ask\n\nA1\n\n## Chapter summaries\n\nS1\n\nS2\n')
+  })
+  it('keeps ### subheadings inside the section', () => {
+    expect(appendUnderHeading('## Ask\n\n### q\nA1\n', 'Ask', 'A2')).toBe('## Ask\n\n### q\nA1\n\nA2\n')
   })
 })

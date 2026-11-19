@@ -9,6 +9,7 @@ import type { Backlink } from '../library/BookLibrary'
 import { ReaderChrome, SelectionPopover, SidePanel, el, iconButton, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook, forBook, LINE_CHARS } from '../reader/appearance'
 import { AwakeKeeper, Dimmer, Ruler, mergeTextLines, textRects } from '../reader/comfort'
+import { ReadingClock } from '../reader/readingClock'
 import { Peek } from '../reader/peek'
 import { offerRecap } from '../reader/recapBanner'
 import { isPageTurnKey, wholeWordAt } from '../reader/dom'
@@ -87,7 +88,8 @@ export class PdfView extends FileView {
   private backlinks: Backlink[] = []
   page = 1
   private saveTimer = 0
-  private session = { start: 0, from: 0, highlights: 0 }
+  private session = { from: 0, highlights: 0 }
+  private clock = new ReadingClock()
   private pendingSubpath: string | null = null
   private ready = false
   focusMode = new FocusMode(() => this.containerEl.doc)
@@ -159,7 +161,7 @@ export class PdfView extends FileView {
       () => this.ready && this.app.workspace.getActiveViewOfType(PdfView) === this)
     this.register(() => this.awake.release())
     this.root.addEventListener('mousemove', e => this.ruler.pointerAt(e.clientY))
-    this.root.addEventListener('pointerdown', () => this.awake.poke())
+    this.root.addEventListener('pointerdown', () => this.activity())
     // page-turner remotes and keyboards: keys still turn pages when focus sits outside the PDF (a toolbar, the tab header)
     this.registerDomEvent(this.containerEl.doc, 'keydown', e => {
       if (e.defaultPrevented || this.root.contains(e.target as Node) || this.app.workspace.getActiveViewOfType(PdfView) !== this) return
@@ -187,7 +189,7 @@ export class PdfView extends FileView {
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
     this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
-    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.stopAutoScroll(); void this.savePosition() } else this.awake.onVisible() })
+    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.clock.pause(); this.stopAutoScroll(); void this.savePosition() } else { this.clock.resume(); this.awake.onVisible() } })
     // auto-scroll holds while a finger or button is down (touch, click, selecting text)
     this.root.addEventListener('pointerdown', () => { this.pointerHeld = true })
     this.registerDomEvent(this.containerEl.doc, 'pointerup', () => { this.pointerHeld = false })
@@ -245,12 +247,13 @@ export class PdfView extends FileView {
       this.buildViewer(this.pendingSubpath ? 1 : Number(props.page) || 1)
       this.applyLook()
       this.ready = true
-      this.session = { start: Date.now(), from: this.fraction(), highlights: 0 }
+      this.session = { from: this.fraction(), highlights: 0 }
+      this.clock.start()
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
       void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size, isStub: this.isStub })
       this.offerRecap(typeof props.progress === 'number' ? props.progress : 0)
-      this.awake.poke()
+      this.activity()
     } catch (e) {
       console.error('Octavo: failed to open PDF', e)
       loading.setText(`Could not open this PDF: ${(e as Error).message ?? e}`)
@@ -787,6 +790,8 @@ export class PdfView extends FileView {
   }
 
   private async closeDoc() {
+    // a save still waiting from a page turn must not land in the next book's note
+    window.clearTimeout(this.saveTimer)
     this.stopAutoScroll()
     this.awake?.release()
     this.peek?.hide()
@@ -1584,7 +1589,8 @@ export class PdfView extends FileView {
     }, 80)
   }
 
-  private fraction() { return this.doc ? (this.page - 1) / Math.max(1, this.doc.numPages - 1) : 0 }
+  // a one-page PDF is finished once open (see savePosition), so it reads as 100%, not 0%
+  private fraction() { return !this.doc ? 0 : this.doc.numPages <= 1 ? 1 : (this.page - 1) / (this.doc.numPages - 1) }
 
   /** Tap on the footer: chapter → time left → page and percent. The page grid is the button next to the slider. */
   private cycleFooter() {
@@ -1598,7 +1604,7 @@ export class PdfView extends FileView {
 
   private updateFooter() {
     if (!this.doc) return
-    this.awake?.poke()
+    this.activity()
     const total = this.doc.numPages
     const pct = Math.round(this.fraction() * 100)
     this.chrome.progressBar.setCssProps({ '--octavo-progress': `${this.fraction() * 100}%` })
@@ -1629,11 +1635,16 @@ export class PdfView extends FileView {
     await this.plugin.library.setProps(this.note, patch)
   }
 
+  /** A page turn, tap, key or scroll: keeps the screen on and counts toward reading time. */
+  private activity() {
+    this.awake?.poke()
+    this.clock.tick()
+  }
+
   private async logSession() {
-    if (!this.file || !this.session.start) return
-    const minutes = Math.round((Date.now() - this.session.start) / 60000)
+    if (!this.file || !this.clock.running) return
+    const minutes = this.clock.stop()
     await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to: this.fraction(), highlights: this.session.highlights })
-    this.session.start = 0
     await this.plugin.saveSettings()
   }
 
@@ -1711,7 +1722,7 @@ export class PdfView extends FileView {
   private onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, textarea, select, .octavo-panel, .octavo-peek')) return
     const mod = e.metaKey || e.ctrlKey
-    this.awake.poke()
+    this.activity()
     if (e.key === 'Escape' && this.peek.visible) { this.peek.hide(); return }
     if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && this.ruler.on && !mod && !e.shiftKey) {
       e.preventDefault()

@@ -38,7 +38,7 @@ export class BookLibrary {
   /** Notes created or adopted this session (book path / `id:<octavo-id>` → note path). Survives reindex while the metadata cache catches up. */
   private recent = new Map<string, string>()
   private indexed = false
-  constructor(private app: App, private settings: () => OctavoSettings) {}
+  constructor(private app: App, private settings: () => OctavoSettings, private save: () => Promise<void> = async () => {}) {}
 
   /** Rebuild the book→note index from frontmatter `book` links. */
   reindex(): void {
@@ -301,12 +301,23 @@ export class BookLibrary {
   }
 
   async setProps(note: TFile, props: Record<string, unknown>): Promise<void> {
+    let finished = false
     await this.app.fileManager.processFrontMatter(note, (fm: Record<string, unknown>) => {
+      // read from the file itself, not the metadata cache, so two quick saves cannot count one book twice
+      finished = props.status === 'finished' && fm.status !== 'finished'
       for (const [k, v] of Object.entries(props)) {
         if (v === undefined) delete fm[k]
+        else if (typeof v === 'number' && !Number.isFinite(v)) continue // never write NaN or Infinity into a note
         else fm[k] = v
       }
     })
+    // "Finished in <year>": every way a book gets finished (end of book, a PDF's last page, the menus, an import)
+    if (finished) {
+      const byYear = this.settings().stats.finishedByYear
+      const y = moment().format('YYYY')
+      byYear[y] = (byYear[y] ?? 0) + 1
+      await this.save()
+    }
   }
 
   getProps(note: TFile): Record<string, unknown> {
@@ -387,9 +398,10 @@ export class BookLibrary {
     const line = `- 📖 ${link} · ${s.minutes} min · ${pct(s.from)} → ${pct(s.to)}${s.highlights ? ` · ${s.highlights} highlight${s.highlights > 1 ? 's' : ''}` : ''}`
     await this.app.vault.process(daily, md => {
       const heading = '## Reading'
-      if (!md.includes(heading)) return `${md.replace(/\s+$/, '')}\n\n${heading}\n${line}\n`
       const lines = md.split('\n')
+      // the heading line itself: "### Reading" or "## Reading list" elsewhere in the note do not count
       let i = lines.findIndex(l => l.trim() === heading) + 1
+      if (!i) return `${md.replace(/\s+$/, '')}\n\n${heading}\n${line}\n`
       while (i < lines.length && lines[i].startsWith('- ')) i++
       lines.splice(i, 0, line)
       return lines.join('\n')

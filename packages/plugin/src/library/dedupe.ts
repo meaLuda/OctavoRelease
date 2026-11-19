@@ -20,6 +20,9 @@ export interface DuplicateGroup<T extends NoteInfo = NoteInfo> {
   dups: T[]
 }
 
+/** Ids made up when a book had none (from its file size, or the import time): two different books can share one. */
+const PLACEHOLDER_ID = /^(lib|import)-/
+
 /** Notes sharing an octavo-id or a resolved book link form one group (transitively). Groups of one are dropped. */
 export function groupDuplicates<T extends NoteInfo>(notes: T[]): DuplicateGroup<T>[] {
   const parent = notes.map((_, i) => i)
@@ -27,7 +30,7 @@ export function groupDuplicates<T extends NoteInfo>(notes: T[]): DuplicateGroup<
   const union = (a: number, b: number) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra }
   const byKey = new Map<string, number>()
   notes.forEach((n, i) => {
-    for (const key of [n.id ? `id:${n.id}` : '', n.book ? `book:${n.book}` : '']) {
+    for (const key of [n.id && !PLACEHOLDER_ID.test(n.id) ? `id:${n.id}` : '', n.book ? `book:${n.book}` : '']) {
       if (!key) continue
       const j = byKey.get(key)
       if (j === undefined) byKey.set(key, i)
@@ -96,6 +99,7 @@ export function mergeProps(keep: Record<string, unknown>, dups: Array<Record<str
   if (best !== keep) {
     out.progress = best.progress
     if (best.position !== undefined) out.position = best.position
+    if (best.page !== undefined) out.page = best.page // PDFs keep their place in page
   }
   const statuses = [keep, ...dups].map(p => propText(p.status ?? '')).filter(s => s in STATUS_RANK)
   const status = statuses.sort((a, b) => STATUS_RANK[b] - STATUS_RANK[a])[0]

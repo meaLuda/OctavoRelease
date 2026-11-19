@@ -6,7 +6,7 @@ import { el, iconButton } from './ui'
  * ago (0 = never), is partly read, and AI is set up. It goes away by itself after 30 seconds.
  */
 export function offerRecap(root: HTMLElement, o: { afterDays: number; lastRead: string; progress: number; aiReady: boolean; run: () => void }): void {
-  if (!o.afterDays || !o.aiReady || !o.lastRead || o.progress < 0.02 || o.progress > 0.98) return
+  if (!o.afterDays || !o.aiReady || !o.lastRead || !Number.isFinite(o.progress) || o.progress < 0.02 || o.progress > 0.98) return
   const away = moment().diff(moment(o.lastRead), 'days')
   if (!Number.isFinite(away) || away < o.afterDays) return
   const bar = el('div', 'octavo-cloud-banner octavo-recap-banner', root)

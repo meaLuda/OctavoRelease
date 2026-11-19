@@ -103,8 +103,9 @@ export interface OctavoSettings {
    * octavoDefaulted: Octavo AI was made the default once for a Cloud + AI account (a later choice is kept).
    */
   ai: { provider: 'none' | 'octavo' | 'openai' | 'anthropic' | 'ollama'; apiKey: string; model: string; baseUrl: string; allowFallback: boolean; octavoDefaulted?: boolean }
-  /** labels: last collections/tags sent to the Cloud per cloud book id (so only real changes are synced). */
-  cloud: { apiBase: string; email: string; token: string; labels?: Record<string, string> }
+  /** labels: last collections/tags sent to the Cloud per cloud book id (so only real changes are synced).
+   *  ocrPending: cloud book ids sent for OCR whose searchable copy has not been fetched yet (the device copy is the old scan). */
+  cloud: { apiBase: string; email: string; token: string; labels?: Record<string, string>; ocrPending?: string[] }
   autoScrollSpeed: number
   /** PDF: a drag or trackpad scroll on a page wider than the view keeps to its first direction. */
   pdfScrollLock: boolean

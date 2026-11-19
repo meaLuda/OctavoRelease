@@ -24,6 +24,12 @@ describe('groupDuplicates', () => {
     const g = groupDuplicates([{ path: 'B/X 2.md', id: 'a', ctime: 1 }, { path: 'B/X.md', id: 'a', ctime: 1 }])
     expect(g[0]!.keep.path).toBe('B/X.md')
   })
+  it('a made-up id shared by two different books does not join them', () => {
+    expect(groupDuplicates([{ path: 'B/A.md', id: 'lib-1a2b', book: 'A.epub', ctime: 1 }, { path: 'B/B.md', id: 'lib-1a2b', book: 'B.epub', ctime: 2 }])).toEqual([])
+  })
+  it('a PDF keeps the page that goes with the furthest progress', () => {
+    expect(mergeProps({ progress: 0.1, page: 5 }, [{ progress: 0.6, page: 120 }])).toMatchObject({ progress: 0.6, page: 120 })
+  })
 })
 
 describe('mergeHighlightBlocks', () => {

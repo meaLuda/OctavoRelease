@@ -135,6 +135,17 @@ describe('streak', () => {
     const mins = { '2026-10-01': 10, '2026-10-04': 10, '2026-10-05': 10 }
     expect(computeStreak(mins, 5, d('2026-10-05')).current).toBe(2)
   })
+  it('counts today and each day once across a clock change', () => {
+    const tz = process.env.TZ
+    process.env.TZ = 'Europe/London' // clocks went back on 2026-10-25
+    try {
+      expect(computeStreak({ '2026-10-01': 10, '2026-11-19': 10 }, 5, d('2026-11-19')).current).toBe(1)
+      const mins: Record<string, number> = {}
+      for (let day = 20; day <= 31; day++) if (day !== 25) mins[`2026-10-${day}`] = 10
+      for (let day = 1; day <= 19; day++) mins[`2026-11-${String(day).padStart(2, '0')}`] = 10
+      expect(computeStreak(mins, 5, d('2026-11-19')).current).toBe(30)
+    } finally { process.env.TZ = tz }
+  })
   it('does not break just because today is not done yet', () => {
     const mins = { '2026-10-03': 10, '2026-10-04': 10 }
     expect(computeStreak(mins, 5, d('2026-10-05'))).toMatchObject({ current: 2, metToday: false })

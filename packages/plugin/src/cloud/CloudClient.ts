@@ -163,10 +163,14 @@ export class CloudClient {
     const sha = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2, '0')).join('')
     const notice = new Notice(`Uploading ${file.name}…`, 0)
     try {
-      const up = await this.api<{ id: string; putUrl: string }>('/v1/library/upload', { method: 'POST', body: JSON.stringify({ filename: file.name, size: data.byteLength, sha256: sha, title: file.basename, format: file.extension }) })
-      const put = await requestUrl({ url: up.putUrl, method: 'PUT', body: data, contentType: 'application/octet-stream', throw: false })
-      if (put.status >= 300) throw new Error(`Upload failed (${put.status})`)
-      await this.api(`/v1/library/${up.id}/complete`, { method: 'POST', body: '{}' })
+      const up = await this.api<{ id: string; putUrl: string | null; duplicate?: boolean }>('/v1/library/upload', { method: 'POST', body: JSON.stringify({ filename: file.name, size: data.byteLength, sha256: sha, title: file.basename, format: file.extension }) })
+      // the same book is already in the cloud (moved before, or from another device): reuse it
+      if (!up.duplicate) {
+        if (!up.putUrl) throw new Error('Upload failed (no upload address)')
+        const put = await requestUrl({ url: up.putUrl, method: 'PUT', body: data, contentType: 'application/octet-stream', throw: false })
+        if (put.status >= 300) throw new Error(`Upload failed (${put.status})`)
+        await this.api(`/v1/library/${up.id}/complete`, { method: 'POST', body: '{}' })
+      }
       await bookCache.put(up.id, new Blob([data]))
       notice.hide()
       new ConfirmModal(this.app, 'Free up space?', `“${file.name}” is safely in your cloud library. Replace the vault copy with a small placeholder? Links and highlights keep working; the book downloads when you open it on another device.`, async () => {
@@ -185,7 +189,19 @@ export class CloudClient {
   }
 
   async fetchBook(stub: CloudStub): Promise<Blob> {
-    const cached = await bookCache.get(stub.id)
+    // sent for OCR from here: once the server has the searchable copy, drop the old scan kept on this device
+    const pending = this.plugin.settings.cloud.ocrPending ?? []
+    let keep = true
+    if (pending.includes(stub.id) && this.signedIn) {
+      const ocr = await this.api<{ books: CloudBook[] }>('/v1/library').then(r => r.books.find(b => b.id === stub.id)?.ocr).catch(() => 'queued' as const)
+      if (ocr === 'queued') keep = false
+      else {
+        await bookCache.remove(stub.id)
+        this.plugin.settings.cloud.ocrPending = pending.filter(id => id !== stub.id)
+        await this.plugin.saveSettings()
+      }
+    }
+    const cached = keep ? await bookCache.get(stub.id) : null
     if (cached) return cached
     if (!this.signedIn) throw new Error('This book is in Octavo Cloud — sign in to download it.')
     const notice = new Notice(`Downloading “${stub.title}”…`, 0)
@@ -194,7 +210,7 @@ export class CloudClient {
       const res = await requestUrl({ url, throw: false })
       if (res.status >= 300) throw new Error(`Download failed (${res.status})`)
       const blob = new Blob([res.arrayBuffer])
-      await bookCache.put(stub.id, blob)
+      if (keep) await bookCache.put(stub.id, blob)
       return blob
     } finally { notice.hide() }
   }
@@ -207,7 +223,7 @@ export class CloudClient {
       await new Promise(res => window.setTimeout(res, i < 10 ? 400 : 1000))
       const j = await this.api<{ status: string; error?: string; result?: { url?: string } }>(`/v1/jobs/${r.job}`)
       if (j.status === 'done' && j.result?.url) return j.result.url
-      if (j.status === 'failed') throw new Error(j.error ?? 'Read-aloud failed')
+      if (j.status === 'failed' || j.status === 'cancelled') throw new Error(j.error ?? 'Read-aloud failed')
     }
     throw new Error('Read-aloud timed out')
   }
@@ -218,6 +234,8 @@ export class CloudClient {
     const stub = file.stat.size <= STUB_MAX ? parseStub(await this.app.vault.read(file)) : null
     if (!stub) { new Notice('Move the PDF to Octavo Cloud first, then run OCR.'); return }
     await this.api(`/v1/library/${stub.id}/ocr`, { method: 'POST', body: '{}' })
+    const c = this.plugin.settings.cloud
+    if (!c.ocrPending?.includes(stub.id)) { c.ocrPending = [...(c.ocrPending ?? []), stub.id]; await this.plugin.saveSettings() }
     new Notice('OCR queued — you’ll get a searchable copy in your cloud library.')
   }
 

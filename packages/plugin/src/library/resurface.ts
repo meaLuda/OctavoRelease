@@ -54,3 +54,19 @@ export function recordShown(shown: Record<string, string>, ids: string[], today:
 export function dailySection(heading: string, embeds: string[]): string {
   return [`## ${heading}`, '', ...embeds.flatMap(e => [e, ''])].join('\n').trimEnd()
 }
+
+/**
+ * Appends `block` at the end of the "## <heading>" section (up to the next # or ## heading), or adds the section
+ * at the end of the note when there is none. Other sections stay where they are.
+ */
+export function appendUnderHeading(md: string, heading: string, block: string): string {
+  const lines = md.replace(/\s+$/, '').split('\n')
+  const at = lines.findIndex(l => l.trim() === `## ${heading}`)
+  if (at < 0) return `${lines.join('\n')}\n\n## ${heading}\n\n${block}\n`
+  let end = at + 1
+  while (end < lines.length && !/^#{1,2} /.test(lines[end]!)) end++
+  let ins = end
+  while (ins > at + 1 && !lines[ins - 1]!.trim()) ins--
+  lines.splice(ins, 0, '', block, ...(ins === end && end < lines.length ? [''] : []))
+  return `${lines.join('\n')}\n`
+}

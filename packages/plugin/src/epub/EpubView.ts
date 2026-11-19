@@ -12,6 +12,7 @@ import { BOOK_EXTENSIONS, type Backlink } from '../library/BookLibrary'
 import { ReaderChrome, SelectionPopover, SidePanel, el, tagFilterChips, cardTags, type PanelTab } from '../reader/ui'
 import { renderAppearance, resolveLook, forBook, lineWidthPx } from '../reader/appearance'
 import { AwakeKeeper, Dimmer, Ruler, mergeTextLines, textRects } from '../reader/comfort'
+import { ReadingClock } from '../reader/readingClock'
 import { FootnotePopup } from '../reader/footnotes'
 import { Peek } from '../reader/peek'
 import { offerRecap } from '../reader/recapBanner'
@@ -52,7 +53,8 @@ export class EpubView extends FileView {
   private saveTimer = 0
   private pageEnter = 0
   private pageChars = 0
-  private session = { start: 0, from: 0, highlights: 0 }
+  private session = { from: 0, highlights: 0 }
+  private clock = new ReadingClock()
   private pendingSubpath: string | null = null
   private ready = false
   focusMode = new FocusMode(() => this.containerEl.doc)
@@ -122,7 +124,7 @@ export class EpubView extends FileView {
       if ((e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable], .modal-container')) return
       this.onKey(e)
     })
-    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (document.hidden) void this.savePosition(true); else this.awake.onVisible() })
+    this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.clock.pause(); void this.savePosition(true) } else { this.clock.resume(); this.awake.onVisible() } })
     this.registerEvent(this.app.workspace.on('css-change', () => this.applyLook()))
     this.registerEvent(this.app.workspace.on('active-leaf-change', l => { if (l !== this.leaf) this.containerEl.doc.body.removeClass('octavo-immersive') }))
     this.registerEvent(this.app.metadataCache.on('resolved', () => this.refreshBacklinks()))
@@ -188,13 +190,14 @@ export class EpubView extends FileView {
         await view.init({ lastLocation, showTextStart: !lastLocation })
       }
       this.ready = true
-      this.session = { start: Date.now(), from: this.loc?.fraction ?? 0, highlights: 0 }
+      this.session = { from: this.loc?.fraction ?? 0, highlights: 0 }
+      this.clock.start()
       if (this.pendingSubpath) { const s = this.pendingSubpath; this.pendingSubpath = null; await this.navigateSubpath(s) }
       this.chrome.title.setText(this.title)
       this.root.focus({ preventScroll: true })
       void maybeCloudPrompt(this.plugin, this.root, 'big', file, this.bookId, { size: file.stat.size })
       this.offerRecap(typeof props.progress === 'number' ? props.progress : 0)
-      this.awake.poke()
+      this.activity()
     } catch (e) {
       console.error('Octavo: failed to open book', e)
       loading.setText(`Could not open this book: ${(e as Error).message ?? e}`)
@@ -219,6 +222,8 @@ export class EpubView extends FileView {
   }
 
   private async closeBook() {
+    // a save still waiting from a page turn must not land in the next book's note
+    window.clearTimeout(this.saveTimer)
     this.stopAutoScroll()
     this.awake?.release()
     this.footnotes?.hide()
@@ -421,7 +426,7 @@ export class EpubView extends FileView {
     const rr = this.root.getBoundingClientRect()
     const x = (fr ? fr.left + e.clientX : e.clientX) - rr.left
     const y = (fr ? fr.top + e.clientY : e.clientY) - rr.top
-    this.awake.poke()
+    this.activity()
     if (Platform.isMobile && this.plugin.settings.doubleTapDefine) {
       // a second tap on the same spot defines the word there; a single tap waits a moment to be sure
       const now = performance.now()
@@ -463,7 +468,7 @@ export class EpubView extends FileView {
     const k = e.key
     const sel = this.lastSelection
     const paged = this.plugin.settings.flow !== 'scrolled'
-    this.awake.poke()
+    this.activity()
     if (k === 'Escape' && (this.footnotes.visible || this.peek.visible)) { this.footnotes.hide(); this.peek.hide(); return }
     // reading ruler: up and down move it a line; at the page edge the page turns
     if ((k === 'ArrowDown' || k === 'ArrowUp') && this.ruler.on && !e.shiftKey) {
@@ -492,12 +497,17 @@ export class EpubView extends FileView {
     }
     this.pageEnter = now
     this.pageChars = detail.range?.toString().length ?? 0
-    this.loc = { ...detail, index: detail.section?.current }
+    // foliate gives NaN when a book's sections report no size; fall back to the section count and the page within it
+    const s = detail.section
+    const r = this.foliate?.renderer as { page?: number; pages?: number } | undefined
+    const within = r?.pages && r.pages > 1 ? Math.min(1, Math.max(0, (r.page ?? 0) / (r.pages - 1))) : 0
+    const fraction = Number.isFinite(detail.fraction) ? detail.fraction : s && s.total > 0 ? (s.current + within) / s.total : 0
+    this.loc = { ...detail, fraction, index: s?.current }
     // a page turn starts the ruler on its first line (a ruler step back past the top lands on the last line);
     // a relayout (new size, font or width) keeps it where it was
     const turned = detail.reason === 'page' || detail.reason === 'snap' || detail.reason === 'navigation'
     this.ruler.invalidate(turned && this.plugin.settings.flow !== 'scrolled' ? 1 : 0)
-    this.awake.poke()
+    this.activity()
     this.updateFooter()
     this.chrome.setBookmarked(this.isBookmarked())
     window.clearTimeout(this.saveTimer)
@@ -547,8 +557,6 @@ export class EpubView extends FileView {
     if (fraction >= 0.995 && props.status !== 'finished') {
       patch.status = 'finished'
       patch.finished = moment().format('YYYY-MM-DD')
-      const y = moment().format('YYYY')
-      this.plugin.settings.stats.finishedByYear[y] = (this.plugin.settings.stats.finishedByYear[y] ?? 0) + 1
       new Notice(`Finished “${this.title}” 🎉`)
     } else if (props.status === 'want') patch.status = 'reading'
     await this.plugin.library.setProps(this.note, patch)
@@ -556,11 +564,16 @@ export class EpubView extends FileView {
     void this.plugin.saveSettings()
   }
 
+  /** A page turn, tap, key or scroll: keeps the screen on and counts toward reading time. */
+  private activity() {
+    this.awake?.poke()
+    this.clock.tick()
+  }
+
   private async logSession() {
-    if (!this.file || !this.session.start) return
-    const minutes = Math.round((Date.now() - this.session.start) / 60000)
+    if (!this.file || !this.clock.running) return
+    const minutes = this.clock.stop()
     await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to: this.loc?.fraction ?? this.session.from, highlights: this.session.highlights })
-    this.session.start = 0
     await this.plugin.saveSettings()
   }
 
@@ -969,7 +982,7 @@ export class EpubView extends FileView {
       if (v !== null && Number.isFinite(n)) { const from = this.loc?.cfi; await this.foliate!.goToFraction(Math.min(1, Math.max(0, n / 100))); if (from) this.offerBack(from) }
     }))
     m.addSeparator()
-    const status = (st: string, label: string) => m.addItem(i => i.setTitle(label).setIcon('bookmark-check').onClick(() => this.note && this.plugin.library.setProps(this.note, { status: st, ...(st === 'finished' ? { finished: moment().format('YYYY-MM-DD') } : {}) })))
+    const status = (st: string, label: string) => m.addItem(i => i.setTitle(label).setIcon('bookmark-check').onClick(() => this.note && this.plugin.library.setProps(this.note, { status: st, ...(st === 'finished' ? { finished: moment().format('YYYY-MM-DD'), progress: 1 } : {}) })))
     status('want', 'Mark as want to read'); status('finished', 'Mark as finished'); status('abandoned', 'Mark as abandoned')
     m.showAtMouseEvent(e)
   }
