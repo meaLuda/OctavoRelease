@@ -20,6 +20,14 @@ describe('reflow', () => {
       { type: 'p', text: 'A second paragraph after a gap.', size: 10 },
     ])
   })
+  it('keeps a large roman-numeral chapter heading, drops a page number in roman numerals', () => {
+    const blocks = reflow([
+      line('XIV', 740, 72, 18),
+      line('The chapter begins with a line of body text.', 700),
+      line('xii', 40),
+    ])
+    expect(blocks.map(b => b.text)).toEqual(['XIV', 'The chapter begins with a line of body text.'])
+  })
   it('starts a paragraph on an indented line after a short sentence-ending line', () => {
     const blocks = reflow([
       line('A long line that fills the measure of the column nicely ok.', 700, 72, 10, 300),

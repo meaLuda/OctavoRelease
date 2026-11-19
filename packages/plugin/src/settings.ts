@@ -102,7 +102,8 @@ export interface OctavoSettings {
    * provider 'octavo' = Octavo AI (Cloud + AI, no key). allowFallback lets Octavo AI use DeepSeek when Gemini is down.
    * octavoDefaulted: Octavo AI was made the default once for a Cloud + AI account (a later choice is kept).
    */
-  ai: { provider: 'none' | 'octavo' | 'openai' | 'anthropic' | 'ollama'; apiKey: string; model: string; baseUrl: string; allowFallback: boolean; octavoDefaulted?: boolean }
+  /** apiKey, model and baseUrl belong to the current provider; `saved` keeps each other provider's own, so a key never goes to a different provider. */
+  ai: { provider: 'none' | 'octavo' | 'openai' | 'anthropic' | 'ollama'; apiKey: string; model: string; baseUrl: string; allowFallback: boolean; octavoDefaulted?: boolean; saved?: Partial<Record<'openai' | 'anthropic' | 'ollama', { apiKey: string; model: string; baseUrl: string }>> }
   /** labels: last collections/tags sent to the Cloud per cloud book id (so only real changes are synced).
    *  ocrPending: cloud book ids sent for OCR whose searchable copy has not been fetched yet (the device copy is the old scan). */
   cloud: { apiBase: string; email: string; token: string; labels?: Record<string, string>; ocrPending?: string[] }
@@ -197,4 +198,21 @@ export const DEFAULT_SETTINGS: OctavoSettings = {
   exportNoteTemplate: DEFAULT_EXPORT_NOTE_TEMPLATE,
   exportHighlightTemplate: DEFAULT_EXPORT_HIGHLIGHT_TEMPLATE,
   library: { folders: [], hidden: [], minPdfMB: 2, mode: 'grid', size: 150, sort: 'recent', smart: [], watch: true, cloudFolder: 'Library' },
+}
+
+/**
+ * Settings saved by another device (Obsidian Sync) meet this device's copy: their choices win, but reading stats are
+ * merged per key (the larger count), so neither device's minutes or finished books are lost to the other's last save.
+ */
+export function mergeSyncedStats(mine: OctavoSettings['stats'], theirs: Partial<OctavoSettings['stats']> | undefined): OctavoSettings['stats'] {
+  const max = (a: Record<string, number> = {}, b: Record<string, number> = {}) => {
+    const out: Record<string, number> = { ...a }
+    for (const [k, v] of Object.entries(b)) if (Number.isFinite(v) && !(Number(out[k]) >= v)) out[k] = v
+    return out
+  }
+  return {
+    minutesByDay: max(mine.minutesByDay, theirs?.minutesByDay),
+    finishedByYear: max(mine.finishedByYear, theirs?.finishedByYear),
+    minutesByBook: max(mine.minutesByBook, theirs?.minutesByBook),
+  }
 }

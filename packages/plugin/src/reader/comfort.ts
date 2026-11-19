@@ -34,6 +34,8 @@ export const AWAKE_IDLE_MS = 10 * 60_000
  */
 export class AwakeKeeper {
   private lock: WakeLockSentinelLike | null = null
+  /** A request on its way: further pokes wait for it instead of asking for (and leaking) a second lock. */
+  private asking = false
   private idle = 0
   private wanted = false
   constructor(private doc: () => Document, private enabled: () => boolean, private active: () => boolean) {}
@@ -44,7 +46,7 @@ export class AwakeKeeper {
     this.wanted = true
     window.clearTimeout(this.idle)
     this.idle = window.setTimeout(() => this.release(), AWAKE_IDLE_MS)
-    if (!this.lock || this.lock.released) void this.acquire()
+    if ((!this.lock || this.lock.released) && !this.asking) void this.acquire()
   }
 
   /** The page became visible again: the browser dropped the lock while hidden. */
@@ -53,7 +55,13 @@ export class AwakeKeeper {
   private async acquire(): Promise<void> {
     const wl = (this.doc().defaultView?.navigator as WakeNavigator)?.wakeLock
     if (!wl || this.doc().hidden) return
-    try { this.lock = await wl.request('screen') } catch { this.lock = null }
+    this.asking = true
+    try {
+      const got = await wl.request('screen')
+      // released (idle, closed, hidden) while the request was on its way: let it go at once
+      if (!this.wanted) void got.release().catch(() => {})
+      else this.lock = got
+    } catch { this.lock = null } finally { this.asking = false }
   }
 
   release(): void {

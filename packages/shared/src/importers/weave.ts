@@ -3,6 +3,7 @@ import { toIso } from './types'
 
 /** Weave EPUB Reader data note: ```weave-epub-state YAML (format weave-epub-bookmarks/v5). Position + status only (highlight schema unverified). */
 export function importWeave(markdown: string): ImportedBook | null {
+  markdown = markdown.replace(/\r\n?/g, '\n') // notes saved on Windows
   const block = /```weave-epub-state\n([\s\S]*?)\n```/.exec(markdown)?.[1]
   if (!block) return null
   const get = (k: string) => new RegExp(`^\\s*${k}:\\s*"?([^"\\n]*)"?\\s*$`, 'm').exec(block)?.[1]

@@ -1,9 +1,10 @@
 import { addIcon, FileView, Plugin, TFile, WorkspaceLeaf, MarkdownView, Notice, Menu, requestUrl, moment, normalizePath, Platform, type App, type TAbstractFile } from 'obsidian'
 import { Pace, computeStreak, parseHighlights as parseHighlightsFresh, buildLiteratureNote, refreshLiteratureNote, resolveLiteratureNotePath, EXPORT_BOOK_ID, citekeyFrom, type Highlight, type CopyFormat, type LiteratureInput } from '@octavo/shared'
 import { upgradeLayouts } from './pdf/layout'
-import { DEFAULT_SETTINGS, type OctavoSettings } from './settings'
+import { DEFAULT_SETTINGS, mergeSyncedStats, type OctavoSettings } from './settings'
 import { BookLibrary, BOOK_EXTENSIONS, isBookFile } from './library/BookLibrary'
 import { propText } from './library/dedupe'
+import { hoursMinutes } from './library/stats'
 import { EpubView, EPUB_VIEW } from './epub/EpubView'
 import { PdfView, PDF_VIEW } from './pdf/PdfView'
 import { OctavoSettingTab } from './settingsTab'
@@ -18,7 +19,7 @@ import { besideLeaf } from './platform'
 import { collectDiagnostics } from './diagnostics'
 import { PdfNoteEmbeds } from './pdf/embeds'
 import { copyAs, copyCitation, type CopySource } from './reader/copy'
-import { OfflineDictionary } from './reader/dictionary'
+import { lookupForms, OfflineDictionary, wiktionaryDefinition } from './reader/dictionary'
 import { QuoteCardModal } from './reader/quoteCard'
 import { StatsView, STATS_VIEW } from './library/StatsView'
 import { appendUnderHeading, dailySection, pickHighlights, recordShown } from './library/resurface'
@@ -34,6 +35,10 @@ const OCTAVO_ICON = `<g fill="none" stroke="currentColor" stroke-width="8" strok
 /** Obsidian's private view registry: which view type opens each file extension. */
 const viewRegistry = (app: App) => (app as App & { viewRegistry?: { typeByExtension?: Record<string, string> } }).viewRegistry
 
+
+/** The generated part of a Year in review note (the rest is yours). */
+const YEAR_START = '<!-- octavo:year-in-review -->'
+const YEAR_END = '<!-- /octavo:year-in-review -->'
 export default class OctavoPlugin extends Plugin {
   declare settings: OctavoSettings
   library!: BookLibrary
@@ -97,8 +102,16 @@ export default class OctavoPlugin extends Plugin {
     this.registerEvent(this.app.metadataCache.on('changed', f => this.library.indexNote(f)))
     this.registerEvent(this.app.vault.on('delete', (f: TAbstractFile) => this.library.forgetNote(f.path)))
     this.registerEvent(this.app.vault.on('rename', (f: TAbstractFile, old: string) => {
-      if (f instanceof TFile && isBookFile(f)) this.library.renameBook(old, f.path)
-      else { this.library.forgetNote(old); if (f instanceof TFile) this.library.indexNote(f) }
+      if (f instanceof TFile && isBookFile(f)) {
+        this.library.renameBook(old, f.path)
+        // hidden books and Continue reading dismissals are kept by path: carry them over
+        const lib = this.settings.library
+        const i = lib.hidden.indexOf(old)
+        const dismissed = lib.continueDismissed?.[old]
+        if (i >= 0) lib.hidden[i] = f.path
+        if (dismissed !== undefined) { const cd = { ...lib.continueDismissed }; delete cd[old]; cd[f.path] = dismissed; lib.continueDismissed = cd }
+        if (i >= 0 || dismissed !== undefined) void this.saveSettings()
+      } else { this.library.forgetNote(old); if (f instanceof TFile) this.library.indexNote(f) }
     }))
     this.registerEvent(this.app.workspace.on('active-leaf-change', leaf => {
       if (leaf?.view instanceof MarkdownView) this.lastMarkdownLeaf = leaf
@@ -111,7 +124,26 @@ export default class OctavoPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const data = ((await this.loadData()) ?? {}) as Partial<OctavoSettings>
+    this.applySettings(((await this.loadData()) ?? {}) as Partial<OctavoSettings>)
+  }
+
+  /**
+   * Another device saved its settings (Obsidian Sync). Take its choices, but keep this device's reading stats and
+   * daily-highlight history merged in, and save once so the merged copy is what syncs back.
+   */
+  async onExternalSettingsChange() {
+    const mine = this.settings
+    if (!mine) return
+    this.applySettings(((await this.loadData()) ?? {}) as Partial<OctavoSettings>)
+    this.settings.stats = mergeSyncedStats(mine.stats, this.settings.stats)
+    this.settings.dailyHighlights.shown = { ...mine.dailyHighlights.shown, ...this.settings.dailyHighlights.shown }
+    const theirs = JSON.stringify(((await this.loadData()) ?? {}).stats ?? {})
+    if (JSON.stringify(this.settings.stats) !== theirs) await this.saveSettings()
+    else this.updateStatus()
+    this.refreshReaders()
+  }
+
+  private applySettings(data: Partial<OctavoSettings>) {
     const d = DEFAULT_SETTINGS
     this.settings = {
       ...d, ...data,
@@ -147,6 +179,13 @@ export default class OctavoPlugin extends Plugin {
   }
 
   // ───────────────────────── opening books ─────────────────────────
+
+  /** Open books pick up a changed look (a new custom font, the default theme). */
+  refreshReaders() {
+    for (const l of [...this.app.workspace.getLeavesOfType(EPUB_VIEW), ...this.app.workspace.getLeavesOfType(PDF_VIEW)]) {
+      if (l.view instanceof EpubView || l.view instanceof PdfView) l.view.applyLook()
+    }
+  }
 
   /** The Octavo reader tab already showing this book, other than `except`. */
   readerLeafFor(file: TFile, except?: WorkspaceLeaf): WorkspaceLeaf | undefined {
@@ -293,7 +332,7 @@ export default class OctavoPlugin extends Plugin {
     })
     this.registerCopyCommands()
     this.addCommand({ id: 'reading-goal', name: 'Show reading goal and streak', callback: () => this.showGoal() })
-    this.addCommand({ id: 'year-in-review', name: 'Write my year in review', callback: () => void this.yearInReview() })
+    this.addCommand({ id: 'year-in-review', name: 'Write my year in review', callback: () => void this.yearInReview().catch(e => new Notice(`Could not write the year in review: ${(e as Error).message}`)) })
     this.addCommand({ id: 'cloud-sign-in', name: 'Sign in to cloud', callback: () => void this.cloud.signIn() })
     this.addCommand({ id: 'cloud-library', name: 'Browse cloud library', callback: () => void this.cloud.browse() })
   }
@@ -306,6 +345,7 @@ export default class OctavoPlugin extends Plugin {
       const v = this.activeReader()
       if (!v) return false
       if (!checking) void v.copySource().then(src => src ? run(src) : void new Notice('Octavo: select some text first.'))
+        .catch(e => { console.error('Octavo: copy failed', e); new Notice(`Octavo could not copy that: ${e instanceof Error ? e.message : String(e)}`) })
       return true
     }
     const formats: Array<[CopyFormat, string]> = [['quote', 'quote'], ['link', 'link'], ['callout', 'callout']]
@@ -487,17 +527,20 @@ export default class OctavoPlugin extends Plugin {
         defn = r.text
         footer = r.footer
       } else {
-        const res = await requestUrl({ url: `https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(word.toLowerCase())}`, throw: false })
-        type Sense = { partOfSpeech: string; definitions?: Array<{ definition?: string }> }
-        const en = res.status === 200 ? ((res.json as { en?: Sense[] } | null)?.en ?? []) : []
-        defn = en.slice(0, 2).map(p => `*${p.partOfSpeech}* — ${(p.definitions?.[0]?.definition ?? '').replace(/<[^>]+>/g, '')}`).join('\n\n')
+        // "Monday" and "Paris" exist only capitalised, "word," only without its comma: try each form until one answers
+        for (const form of lookupForms(word)) {
+          const res = await requestUrl({ url: `https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(form)}`, throw: false })
+          defn = res.status === 200 ? wiktionaryDefinition(res.json) : ''
+          if (defn) break
+        }
       }
     } catch (e) { failed = e; defn = '' }
     if (defn) { void this.dict.put(word, defn); modal.setMarkdown(`${defn}${footer ? `\n\n${footer}` : ''}`); return }
     // offline, or nothing found: a definition kept from an earlier lookup or the Vocabulary note
     const kept = await this.dict.get(word)
     if (kept) { defn = kept; modal.setMarkdown(`${kept}\n\n*Saved definition (offline).*`); return }
-    if (failed && this.hostedAi) { modal.setMarkdown(this.aiError(failed)); return }
+    // your own provider's error (bad key, quota, wrong model) is shown, not hidden behind the dictionary
+    if (failed && aiConfigured(this.settings)) { modal.setMarkdown(this.aiError(failed)); return }
     if (this.lookUpNatively()) { modal.close(); return }
     modal.setMarkdown(failed
       ? `No connection, and **${word}** has not been looked up on this device before. Words you look up while online are kept for offline use.`
@@ -578,6 +621,8 @@ export default class OctavoPlugin extends Plugin {
     const dh = this.settings.dailyHighlights
     const today = moment().format('YYYY-MM-DD')
     if (auto && (!dh.enabled || dh.lastDay === today)) return
+    // at startup, let Daily notes (or Templater) make today's note from its template first
+    if (auto) await new Promise(r => window.setTimeout(r, 5000))
     const all: Array<{ id: string; book: string; note: TFile }> = []
     for (const { note } of this.library.allBooks()) for (const h of await this.library.highlights(note)) all.push({ id: h.id, book: note.path, note })
     if (!all.length) { if (!auto) new Notice('Octavo: no highlights yet. Highlight something in a book first.'); return }
@@ -589,7 +634,7 @@ export default class OctavoPlugin extends Plugin {
     await this.app.vault.process(daily, md => {
       const section = dailySection(heading, embeds)
       // run twice on one day (the command): replace today's picks instead of stacking them
-      const re = new RegExp(`\\n?## ${heading}\\n[\\s\\S]*?(?=\\n## |$)`)
+      const re = new RegExp(`\\r?\\n?## ${heading}\\r?\\n[\\s\\S]*?(?=\\r?\\n## |$)`) // \r? for notes saved on Windows
       return re.test(md) ? md.replace(re, `\n${section}\n`) : `${md.replace(/\s+$/, '')}${md.trim() ? '\n\n' : ''}${section}\n`
     })
     dh.shown = recordShown(dh.shown, picks.map(p => p.id), today)
@@ -600,12 +645,20 @@ export default class OctavoPlugin extends Plugin {
 
   /** Kindle-style Vocabulary Builder → Spaced Repetition-compatible cards (`word::definition`). */
   private async saveVocabulary(word: string, defn: string, context: string) {
-    const path = normalizePath(`${this.settings.booksFolder || 'Books'}/Vocabulary.md`)
-    let f = this.app.vault.getAbstractFileByPath(path)
-    const vocab = f instanceof TFile ? f : await this.app.vault.create(path, '---\ntags:\n  - flashcards\n---\n# Vocabulary\n\n')
-    const plain = defn.replace(/\n+/g, ' ').replace(/\*/g, '')
-    await this.app.vault.append(vocab, `${word}::${plain}\n> ${context.replace(/\n+/g, ' ').slice(0, 300)}\n\n`)
-    new Notice(`Saved “${word}” to vocabulary`)
+    if (!defn.trim()) { new Notice('No definition to save yet'); return }
+    const folder = normalizePath(this.settings.booksFolder || 'Books')
+    const path = normalizePath(`${folder}/Vocabulary.md`)
+    try {
+      if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder).catch(() => {})
+      const f = this.app.vault.getAbstractFileByPath(path)
+      const vocab = f instanceof TFile ? f : await this.app.vault.create(path, '---\ntags:\n  - flashcards\n---\n# Vocabulary\n\n')
+      const plain = defn.replace(/\n+/g, ' ').replace(/\*/g, '')
+      await this.app.vault.append(vocab, `${word}::${plain}\n> ${context.replace(/\n+/g, ' ').slice(0, 300)}\n\n`)
+      new Notice(`Saved “${word}” to vocabulary`)
+    } catch (e) {
+      console.error('Octavo: saving vocabulary failed', e)
+      new Notice(`Octavo could not save “${word}” to ${path}: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   /** Ask: explains the passage (no spoilers), then offers a follow-up question about it. */
@@ -701,8 +754,10 @@ export default class OctavoPlugin extends Plugin {
 
   /** Keep an AI answer: appended under "## <heading>" in the book note, quoting the passage. */
   private async saveAnswer(title: string, passage: string, answer: string, heading = 'Ask') {
-    const note = this.library.allBooks().map(b => b.note).find(n => this.library.getProps(n).title === title)
-    if (!note || !answer) return
+    if (!answer) return
+    // the open book's own note; by title only when no reader is open (titles can be edited or shared)
+    const note = this.activeReader()?.bookNote ?? this.library.allBooks().map(b => b.note).find(n => this.library.getProps(n).title === title)
+    if (!note) { new Notice('Could not find this book\'s note. Open the book and try again.'); return }
     const quote = passage.split('\n').map(l => `> ${l}`).join('\n')
     await this.appendToNote(note, heading, `${quote}\n\n${answer.trim()}`)
     new Notice('Saved to the book note')
@@ -718,12 +773,12 @@ export default class OctavoPlugin extends Plugin {
     const leaf = this.lastMarkdownLeaf
     const view = leaf?.view instanceof MarkdownView ? leaf.view : null
     if (!view || view.file === note) return
-    const link = this.app.fileManager.generateMarkdownLink(book, view.file?.path ?? '', this.library.linkFor(book, note, h).match(/#[^|\]]*/)?.[0] ?? '', '↗').replace(/^!/, '')
+    const link = this.library.linkFrom(book, view.file?.path ?? '', h) // built from the anchor: works with Markdown links too
     const quote = h.anchor.quote.exact.split('\n').map(l => `> ${l}`).join('\n')
     view.editor.replaceSelection(`${quote} ${link}\n\n`)
   }
 
-  private async loadCustomFont() {
+  async loadCustomFont() {
     const p = this.settings.customFontPath
     if (!p) return
     const f = this.app.vault.getAbstractFileByPath(normalizePath(p))
@@ -757,23 +812,40 @@ export default class OctavoPlugin extends Plugin {
     ].join('\n\n')).open()
   }
 
-  async yearInReview() {
+  async yearInReview(): Promise<void> {
     const year = moment().format('YYYY')
     const books = this.library.allBooks().map(b => ({ ...b, p: this.library.getProps(b.note) }))
     const finished = books.filter(b => b.p.status === 'finished' && propText(b.p.finished ?? '').startsWith(year))
     const minutes = Object.entries(this.settings.stats.minutesByDay).filter(([d]) => d.startsWith(year)).reduce((a, [, m]) => a + m, 0)
     const byMonth = new Map<string, number>()
     for (const [d, m] of Object.entries(this.settings.stats.minutesByDay)) if (d.startsWith(year)) byMonth.set(d.slice(5, 7), (byMonth.get(d.slice(5, 7)) ?? 0) + m)
-    const highlights = books.reduce((a, b) => a + (Number(b.p.highlights) || 0), 0)
+    // highlights made this year, not every highlight ever
+    let highlights = 0
+    for (const b of books) for (const h of await this.library.highlights(b.note)) if (h.created && moment(h.created).format('YYYY') === year) highlights++
     const lines = [
+      YEAR_START,
       `# ${year} in reading`, '',
-      `- **${finished.length}** books finished`, `- **${Math.round(minutes / 60)}** hours read`, `- **${highlights}** highlights kept`, '',
+      `- **${finished.length}** books finished`, `- **${hoursMinutes(minutes)}** read`, `- **${highlights}** highlights kept`, '',
       '## Finished', ...finished.map(b => `- ${this.app.fileManager.generateMarkdownLink(b.note, '')}${b.p.author ? ` — ${propText(b.p.author)}` : ''}`), '',
-      '## Month by month', ...[...byMonth.entries()].sort().map(([m, v]) => `- ${moment(m, 'MM').format('MMMM')}: ${Math.round(v / 60 * 10) / 10} h`), '',
+      '## Month by month', ...[...byMonth.entries()].sort().map(([m, v]) => `- ${moment(m, 'MM').format('MMMM')}: ${hoursMinutes(v)}`), '',
+      YEAR_END,
     ]
-    const path = normalizePath(`${this.settings.booksFolder || 'Books'}/Year in review ${year}.md`)
+    const folder = normalizePath(this.settings.booksFolder || 'Books')
+    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder).catch(() => {})
+    const path = normalizePath(`${folder}/Year in review ${year}.md`)
     const existing = this.app.vault.getAbstractFileByPath(path)
-    const f = existing instanceof TFile ? (await this.app.vault.modify(existing, lines.join('\n')), existing) : await this.app.vault.create(path, lines.join('\n'))
+    const block = lines.join('\n')
+    let f: TFile
+    if (existing instanceof TFile) {
+      // run again: only the generated part is replaced, what you wrote around it stays
+      await this.app.vault.process(existing, md => {
+        const a = md.indexOf(YEAR_START), b = md.indexOf(YEAR_END)
+        if (a >= 0 && b > a) return md.slice(0, a) + block + md.slice(b + YEAR_END.length)
+        // written by an older version without markers: that text was all generated
+        return md.startsWith(`# ${year} in reading`) ? block : `${block}\n\n${md}`
+      })
+      f = existing
+    } else f = await this.app.vault.create(path, block)
     await this.app.workspace.getLeaf('tab').openFile(f)
   }
 }

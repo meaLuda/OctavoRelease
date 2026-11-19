@@ -2,7 +2,7 @@ import { App, PluginSettingTab, Setting } from 'obsidian'
 import type OctavoPlugin from './main'
 import type { TapAction } from './settings'
 import { THEMES } from './reader/themes'
-import { DEFAULT_MODELS, askAI, listOllamaModels } from './ai/ask'
+import { DEFAULT_MODELS, askAI, listOllamaModels, switchAiProvider } from './ai/ask'
 import { Notice } from 'obsidian'
 import { ImportModal } from './library/ImportModal'
 import { renderLibrarySettings } from './library/librarySettings'
@@ -12,6 +12,7 @@ import { renderDevStrip } from './devStrip'
 const TAP_LABELS: Record<TapAction, string> = { prev: 'Previous page', next: 'Next page', menu: 'Show controls', bookmark: 'Bookmark', toc: 'Contents', search: 'Search', none: 'Nothing' }
 
 export class OctavoSettingTab extends PluginSettingTab {
+  private fontTimer = 0
   constructor(app: App, private plugin: OctavoPlugin) { super(app, plugin) }
 
   display(): void { this.render() }
@@ -36,7 +37,7 @@ export class OctavoSettingTab extends PluginSettingTab {
     new Setting(c).setName('Reading').setHeading()
     new Setting(c).setName('Default theme').setDesc('For books you have not picked a theme in. A theme picked inside a book stays with that book.').addDropdown(d => {
       for (const [id, t] of Object.entries(THEMES)) d.addOption(id, t.name)
-      d.setValue(s.theme).onChange(v => { s.theme = v as typeof s.theme; save() })
+      d.setValue(s.theme).onChange(v => { s.theme = v as typeof s.theme; save(); this.plugin.refreshReaders() })
     })
     new Setting(c).setName('Hide controls after').setDesc('In milliseconds. Set to 0 to keep them visible.')
       .addSlider(sl => sl.setLimits(0, 6000, 500).setValue(s.autoHideMs).onChange(v => { s.autoHideMs = v; save() }))
@@ -51,7 +52,7 @@ export class OctavoSettingTab extends PluginSettingTab {
       sel.onchange = () => { s.tapZones[i] = sel.value as TapAction; save() }
     })
     new Setting(c).setName('Custom font file').setDesc('Path to a .ttf, .otf or .woff2 in your vault (e.g. Atkinson Hyperlegible, Literata, OpenDyslexic). Choose “Custom font” in Appearance.')
-      .addText(t => t.setPlaceholder('Fonts/AtkinsonHyperlegible.ttf').setValue(s.customFontPath).onChange(v => { s.customFontPath = v.trim(); save() }))
+      .addText(t => t.setPlaceholder('Fonts/AtkinsonHyperlegible.ttf').setValue(s.customFontPath).onChange(v => { s.customFontPath = v.trim(); save(); window.clearTimeout(this.fontTimer); this.fontTimer = window.setTimeout(() => void this.plugin.loadCustomFont().then(() => this.plugin.refreshReaders()), 600) }))
     new Setting(c).setName('Auto-scroll speed').setDesc('Pixels per second.')
       .addSlider(sl => sl.setLimits(10, 200, 5).setValue(s.autoScrollSpeed).onChange(v => { s.autoScrollSpeed = v; save() }))
     new Setting(c).setName('Footnote pop-ups').setDesc('Tap a footnote mark to read the note where you are, instead of jumping to it.')
@@ -87,10 +88,18 @@ export class OctavoSettingTab extends PluginSettingTab {
       for (const [k, v] of Object.entries(voices)) d.addOption(k, v)
       d.setValue(s.tts.cloudVoice).onChange(v => { s.tts.cloudVoice = v; save() })
     })
-    new Setting(c).setName('System voice').addDropdown(d => {
-      d.addOption('', 'System default')
-      for (const v of speechSynthesis.getVoices()) d.addOption(v.name, `${v.name} (${v.lang})`)
-      d.setValue(s.tts.voice).onChange(v => { s.tts.voice = v; save() })
+    if (typeof speechSynthesis === 'undefined') new Setting(c).setName('System voice').setDesc('System voices are not available on this device.')
+    else new Setting(c).setName('System voice').addDropdown(d => {
+      const fill = () => {
+        d.selectEl.empty()
+        d.addOption('', 'System default')
+        for (const v of speechSynthesis.getVoices()) d.addOption(v.name, `${v.name} (${v.lang})`)
+        d.setValue(s.tts.voice)
+      }
+      fill()
+      // the voice list often arrives a moment after the page loads
+      if (!speechSynthesis.getVoices().length) speechSynthesis.addEventListener('voiceschanged', fill, { once: true })
+      d.onChange(v => { s.tts.voice = v; save() })
     })
     new Setting(c).setName('Speed').addSlider(sl => sl.setLimits(0.5, 3, 0.1).setValue(s.tts.rate).onChange(v => { s.tts.rate = v; save() }))
 
@@ -108,7 +117,7 @@ export class OctavoSettingTab extends PluginSettingTab {
     c.createEl('p', { cls: 'setting-item-description', text: 'Optional. AI runs only when you press define, ask, summarise or make flashcards. With your own key, requests go straight from this device to that provider. Octavo AI is included with Cloud + AI and needs no key.' })
     new Setting(c).setName('AI provider').addDropdown(d => d
       .addOption('none', 'Off').addOption('octavo', 'Octavo AI (Cloud + AI)').addOption('anthropic', 'Your own key: Anthropic').addOption('openai', 'Your own key: OpenAI-compatible').addOption('ollama', 'Ollama (local)')
-      .setValue(s.ai.provider).onChange(v => { s.ai.provider = v as typeof s.ai.provider; save(); this.render() }))
+      .setValue(s.ai.provider).onChange(v => { switchAiProvider(s.ai, v as typeof s.ai.provider); save(); this.render() }))
     if (s.ai.provider === 'octavo') {
       const tier = this.plugin.cloud.ent?.tier
       const me = this.plugin.cloud.me
@@ -127,6 +136,7 @@ export class OctavoSettingTab extends PluginSettingTab {
         ms.addDropdown(d => {
           d.addOption('', 'Loading…')
           void listOllamaModels(s).then(models => {
+            if (s.ai.provider !== 'ollama') return // switched away while the list loaded
             d.selectEl.empty()
             if (!models.length) { d.addOption('', 'Ollama not reachable — is it running?'); return }
             for (const m of models) d.addOption(m, m)

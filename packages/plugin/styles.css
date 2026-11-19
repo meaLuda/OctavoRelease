@@ -382,8 +382,10 @@ button.octavo-swatch-purple, .octavo-swatch-purple { background-color: #b48cff !
 .is-mobile .mobile-navbar { transition: transform 220ms cubic-bezier(.2,.7,.2,1), opacity 220ms ease; }
 body.octavo-immersive .mobile-navbar { transform: translateY(140%); opacity: 0; pointer-events: none; }
 .is-mobile .octavo-topbar { padding-top: max(6px, env(safe-area-inset-top)); }
-.is-mobile .workspace-leaf-content[data-type="octavo-pdf"] > .view-content { margin-top: 0; } /* the hidden header's floating-nav offset left a blank band */
-.is-mobile .octavo-pdf .octavo-topbar { padding-top: max(6px, var(--safe-area-inset-top, env(safe-area-inset-top))); }
+.is-mobile .workspace-leaf-content[data-type="octavo-epub"] > .view-content,
+.is-mobile .workspace-leaf-content[data-type="octavo-pdf"] > .view-content { margin-top: 0; } /* the hidden header's floating-nav offset left a blank band (iPhone: books opened shifted down) */
+.is-mobile .octavo-pdf .octavo-topbar,
+.is-mobile .workspace-leaf-content[data-type="octavo-epub"] .octavo-topbar { padding-top: max(6px, var(--safe-area-inset-top, env(safe-area-inset-top))); }
 .is-mobile .octavo-pdf-container { padding-top: calc(44px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))); }
 
 /* ── focus mode: everything but the reading pane hidden; overlays still work ─────────────── */

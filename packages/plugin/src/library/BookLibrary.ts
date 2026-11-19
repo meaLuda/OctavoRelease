@@ -21,6 +21,8 @@ export interface BookMeta {
   language?: string
   publisher?: string
   format: string
+  /** The note is made by a library action (a collection, a status), not by opening the book: no start or last-read date. */
+  unopened?: boolean
 }
 
 export interface Backlink {
@@ -191,8 +193,7 @@ export class BookLibrary {
       `format: ${meta.format}`,
       'status: reading',
       'progress: 0',
-      `started: ${today}`,
-      `last-read: ${moment().format('YYYY-MM-DDTHH:mm')}`,
+      ...(meta.unopened ? [] : [`started: ${today}`, `last-read: ${moment().format('YYYY-MM-DDTHH:mm')}`]),
       'highlights: 0',
       'tags:',
       '  - book',
@@ -214,18 +215,28 @@ export class BookLibrary {
     const folder = normalizePath(this.settings().booksFolder || 'Books')
     const key = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim()
     const want = [key(meta.title || ''), key(book.basename)].filter(Boolean)
+    // the same title, or one with a subtitle added ("The Great Gatsby" / "The Great Gatsby A Novel"); not a title that
+    // merely contains another ("Dune" must not take "Dune Messiah"'s highlights). An exact match always wins.
+    const near = (w: string, t: string) => {
+      const [a, b] = w.length <= t.length ? [w, t] : [t, w]
+      return a.length > 8 && b.startsWith(a + ' ') && a.length / b.length >= 0.6
+    }
+    let fuzzy: TFile | null = null
+    let found: TFile | null = null
     for (const f of this.app.vault.getMarkdownFiles()) {
       if (!f.path.startsWith(folder + '/')) continue
       const fm = this.app.metadataCache.getFileCache(f)?.frontmatter
       if (!fm || fm['octavo-id'] || fm.book || !fm.title) continue
       const t = key(String(fm.title))
-      if (!want.some(w => w === t || (t.length > 8 && (w.includes(t) || t.includes(w))))) continue
-      const link = this.app.fileManager.generateMarkdownLink(book, f.path).replace(/^!/, '')
-      await this.setProps(f, { 'octavo-id': meta.id, book: link, format: meta.format })
-      this.remember(book, meta.id, f)
-      return f
+      if (want.some(w => w === t)) { found = f; break }
+      if (!fuzzy && want.some(w => near(w, t))) fuzzy = f
     }
-    return null
+    const f = found ?? fuzzy
+    if (!f) return null
+    const link = this.app.fileManager.generateMarkdownLink(book, f.path).replace(/^!/, '')
+    await this.setProps(f, { 'octavo-id': meta.id, book: link, format: meta.format })
+    this.remember(book, meta.id, f)
+    return f
   }
 
   /**
@@ -302,9 +313,13 @@ export class BookLibrary {
 
   async setProps(note: TFile, props: Record<string, unknown>): Promise<void> {
     let finished = false
+    let year = moment().format('YYYY')
     await this.app.fileManager.processFrontMatter(note, (fm: Record<string, unknown>) => {
       // read from the file itself, not the metadata cache, so two quick saves cannot count one book twice
       finished = props.status === 'finished' && fm.status !== 'finished'
+      // a book finished in an earlier year (an imported reading history) counts for that year
+      const when = String(props.finished ?? fm.finished ?? '')
+      if (/^\d{4}/.test(when)) year = when.slice(0, 4)
       for (const [k, v] of Object.entries(props)) {
         if (v === undefined) delete fm[k]
         else if (typeof v === 'number' && !Number.isFinite(v)) continue // never write NaN or Infinity into a note
@@ -314,8 +329,7 @@ export class BookLibrary {
     // "Finished in <year>": every way a book gets finished (end of book, a PDF's last page, the menus, an import)
     if (finished) {
       const byYear = this.settings().stats.finishedByYear
-      const y = moment().format('YYYY')
-      byYear[y] = (byYear[y] ?? 0) + 1
+      byYear[year] = (byYear[year] ?? 0) + 1
       await this.save()
     }
   }
@@ -383,10 +397,10 @@ export class BookLibrary {
   }
 
   /** Reading session → stats, optional line in today's daily note. */
-  async logSession(s: { book: TFile; note: TFile | null; title: string; minutes: number; from: number; to: number; highlights: number }): Promise<void> {
+  async logSession(s: { book: TFile; note: TFile | null; title: string; minutes: number; from: number; to: number; highlights: number; day?: string }): Promise<void> {
     const settings = this.settings()
     if (s.minutes < 1) return
-    const day = moment().format('YYYY-MM-DD')
+    const day = s.day || moment().format('YYYY-MM-DD')
     settings.stats.minutesByDay[day] = (settings.stats.minutesByDay[day] ?? 0) + s.minutes
     const id = s.note ? propText(this.getProps(s.note)['octavo-id'] ?? '') : ''
     if (id) settings.stats.minutesByBook[id] = (settings.stats.minutesByBook[id] ?? 0) + s.minutes
@@ -411,7 +425,7 @@ export class BookLibrary {
   /** Today's daily note (core Daily notes format and folder), created when missing. */
   async dailyNote(): Promise<TFile | null> {
     // Read the core Daily notes options when available; fall back to YYYY-MM-DD at the vault root.
-    type Internal = { internalPlugins?: { getPluginById?(id: string): { instance?: { options?: { format?: string; folder?: string } } } | null } }
+    type Internal = { internalPlugins?: { getPluginById?(id: string): { instance?: { options?: { format?: string; folder?: string; template?: string } } } | null } }
     const opts = (this.app as App & Internal).internalPlugins?.getPluginById?.('daily-notes')?.instance?.options ?? {}
     const format = opts.format || 'YYYY-MM-DD'
     const folder = opts.folder || ''
@@ -420,11 +434,22 @@ export class BookLibrary {
     if (f instanceof TFile) return f
     try {
       await this.ensureFolder(path.split('/').slice(0, -1).join('/'))
-      return await this.app.vault.create(path, '')
+      return await this.app.vault.create(path, await this.dailyTemplate(opts.template, path))
     } catch {
       new Notice('Octavo: could not create today\'s daily note')
       return null
     }
+  }
+
+  /** The Daily notes template, filled in as Daily notes does ({{date}}, {{time}}, {{title}}, with optional :FORMAT). */
+  private async dailyTemplate(template: string | undefined, path: string): Promise<string> {
+    if (!template) return ''
+    const t = this.app.vault.getAbstractFileByPath(normalizePath(template.endsWith('.md') ? template : `${template}.md`))
+    if (!(t instanceof TFile)) return ''
+    const title = path.split('/').pop()!.replace(/\.md$/, '')
+    return (await this.app.vault.read(t))
+      .replace(/{{\s*(date|time)\s*(?::(.*?))?}}/gi, (_m, kind: string, fmt?: string) => moment().format(fmt?.trim() || (kind.toLowerCase() === 'date' ? 'YYYY-MM-DD' : 'HH:mm')))
+      .replace(/{{\s*title\s*}}/gi, title)
   }
 
   async saveCover(id: string, blob: Blob | null): Promise<string | undefined> {

@@ -12,14 +12,29 @@ const STYLES: Record<CardStyle, { bg: string; fg: string; sub: string; rule: str
 const W = 1080, H = 1350, PAD = 110
 const SERIF = `'Iowan Old Style', 'Charter', Georgia, 'Noto Serif', serif`
 
-/** Lines of `text` that fit `width` at the context's current font (words longer than a line are cut). */
+/** Chinese, Japanese, Korean and Thai: lines may break between any two characters. */
+const ANY_BREAK = /[\u0E00-\u0E7F\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/
+
+/** Lines of `text` that fit `width` at the context's current font. A word wider than a line (a URL, text with no spaces) is broken by character. */
 export function wrapLines(measure: (s: string) => number, text: string, width: number): string[] {
   const out: string[] = []
   for (const para of text.split(/\n+/)) {
     let line = ''
-    for (const word of para.split(/\s+/).filter(Boolean)) {
+    const words = para.split(/\s+/).filter(Boolean)
+    for (let wi = 0; wi < words.length; wi++) {
+      const word = words[wi]!
       const next = line ? `${line} ${word}` : word
-      if (measure(next) <= width || !line) { line = next; continue }
+      if (measure(next) <= width) { line = next; continue }
+      if (measure(word) > width || ANY_BREAK.test(word)) {
+        // fill this line, then go on character by character
+        let cur = line ? `${line} ` : ''
+        for (const ch of Array.from(word)) {
+          if (cur && measure(cur + ch) > width) { out.push(cur.trimEnd()); cur = '' }
+          cur += ch
+        }
+        line = cur
+        continue
+      }
       out.push(line)
       line = word
     }
@@ -46,12 +61,20 @@ export function drawCard(canvas: HTMLCanvasElement, q: QuoteCardInput, style: Ca
   const text = `“${cardText(q.text)}”`
   const boxW = W - PAD * 2, boxH = H - PAD * 2 - 220
   let size = 76, lines: string[] = []
-  for (; size >= 30; size -= 2) {
+  for (; ; size -= 2) {
     ctx.font = `${size}px ${SERIF}`
     lines = wrapLines(s => ctx.measureText(s).width, text, boxW)
-    if (lines.length * size * 1.38 <= boxH) break
+    if (lines.length * size * 1.38 <= boxH || size <= 30) break
   }
   const lh = size * 1.38
+  // still too long at the smallest size (a long poem): end with "…" rather than run over the title
+  const room = Math.max(1, Math.floor(boxH / lh))
+  if (lines.length > room) {
+    lines = lines.slice(0, room)
+    let last = lines[room - 1]!.replace(/[”]$/, '')
+    while (last && ctx.measureText(`${last}…”`).width > boxW) last = last.slice(0, -1)
+    lines[room - 1] = `${last.trimEnd()}…”`
+  }
   const top = PAD + Math.max(0, (boxH - lines.length * lh) / 2) + size
   ctx.fillStyle = c.fg
   ctx.textBaseline = 'alphabetic'

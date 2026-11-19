@@ -62,7 +62,7 @@ const tidy = (s: string) => s
 const stripComment = (s: string) => s.replace(/^(?:\*\*)?(?:comment|note)s?:?(?:\*\*)?:?\s*/i, '').trim()
 
 function frontmatter(md: string): Record<string, string> {
-  const fm = /^---\n([\s\S]*?)\n---/.exec(md)?.[1]
+  const fm = /^---\n([\s\S]*?)\n---/.exec(md.replace(/\r\n?/g, '\n'))?.[1]
   const out: Record<string, string> = {}
   if (!fm) return out
   for (const line of fm.split('\n')) {

@@ -33,9 +33,11 @@ interface PreviewSettingsApp {
 export class PdfNoteEmbeds {
   readonly docs: PdfDocCache
   private scanTimers = new Map<Document, number>()
+  /** Stops watching a window's document (on plugin unload, or when a popout closes). */
+  private unobserve = new Map<Document, () => void>()
 
   constructor(private plugin: OctavoPlugin) {
-    this.docs = new PdfDocCache(plugin.app)
+    this.docs = new PdfDocCache(plugin.app, 3, f => plugin.cloud.resolveStub(f))
   }
 
   register() {
@@ -46,9 +48,12 @@ export class PdfNoteEmbeds {
     })
     this.observe(document)
     plugin.registerEvent(app.workspace.on('window-open', (_w, win) => this.observe(win.document)))
+    // a closed popout: stop watching it, so its document can be freed
+    plugin.registerEvent(app.workspace.on('window-close', (_w, win) => this.unobserve.get(win.document)?.()))
     plugin.registerEvent(app.workspace.on('css-change', () => { for (const d of this.scanTimers.keys()) this.scan(d, true) }))
     plugin.registerEvent((app.workspace as Events).on('hover-link', (info: unknown) => this.onHoverLink(info as HoverLinkInfo)))
     plugin.register(() => this.docs.clear())
+    plugin.register(() => { for (const stop of [...this.unobserve.values()]) stop() })
   }
 
   /** Region crops that left the DOM: free their canvas memory and drop the crop, so a re-attached embed renders again. */
@@ -74,10 +79,12 @@ export class PdfNoteEmbeds {
       this.scanTimers.set(doc, window.setTimeout(() => { this.scanTimers.set(doc, 0); this.scan(doc) }, 80))
     })
     mo.observe(doc.body, { childList: true, subtree: true })
-    this.plugin.register(() => {
-      mo.disconnect(); window.clearTimeout(this.scanTimers.get(doc)); this.scanTimers.delete(doc)
+    const stop = () => {
+      if (!this.scanTimers.has(doc)) return
+      mo.disconnect(); window.clearTimeout(this.scanTimers.get(doc)); this.scanTimers.delete(doc); this.unobserve.delete(doc)
       doc.querySelectorAll<HTMLCanvasElement>('.octavo-region-embed canvas').forEach(releaseCanvas)
-    })
+    }
+    this.unobserve.set(doc, stop)
     this.scan(doc)
   }
 

@@ -26,7 +26,8 @@ export function parseSubpath(subpath: string): Subpath | null {
   const sel = params.get('selection')
   if (sel) {
     const pos = sel.split(',').map(s => parseInt(s.trim(), 10))
-    if (pos.length !== 4 || pos.some(n => Number.isNaN(n))) return null
+    // a damaged selection still names its page: open there instead of at the start of the book
+    if (pos.length !== 4 || pos.some(n => Number.isNaN(n))) return { type: 'page', page, color }
     const [beginIndex, beginOffset, endIndex, endOffset] = pos as [number, number, number, number]
     return { type: 'selection', selection: { page, beginIndex, beginOffset, endIndex, endOffset }, color }
   }
@@ -35,7 +36,11 @@ export function parseSubpath(subpath: string): Subpath | null {
   const rect = params.get('rect')
   if (rect) {
     const r = rect.split(',').map(Number)
-    if (r.length === 4 && r.every(Number.isFinite)) return { type: 'rect', page, rect: r as [number, number, number, number], color }
+    // corners in any order (a hand-edited link): left, bottom, right, top
+    if (r.length === 4 && r.every(Number.isFinite)) {
+      const [a, b, c, d] = r as [number, number, number, number]
+      return { type: 'rect', page, rect: [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)], color }
+    }
   }
   return { type: 'page', page, color }
 }

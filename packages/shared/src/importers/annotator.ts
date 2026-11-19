@@ -7,6 +7,7 @@ import { importId, mapColor, toIso, type ImportedBook } from './types'
  * recomputed by re-anchoring the quote when the book is opened.
  */
 export function importAnnotator(markdown: string): ImportedBook | null {
+  markdown = markdown.replace(/\r\n?/g, '\n') // notes saved on Windows
   const target = /^annotation-target:\s*(.+)$/m.exec(markdown)?.[1]?.trim().replace(/^["']|["']$/g, '')
   const blocks: ImportedBook['highlights'] = []
   const content = markdown.split('\n').map(l => (l.startsWith('>') ? l.replace(/^> ?/, '') : l)).join('\n')

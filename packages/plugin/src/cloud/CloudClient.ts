@@ -45,9 +45,13 @@ export class CloudClient {
       body: init.body,
       throw: false,
     })
+    // a proxy or outage page is HTML: say what happened instead of "Unexpected token <"
+    const json = (() => { try { return res.json as unknown } catch { return undefined } })()
     if (res.status === 401) { this.s.token = ''; await this.plugin.saveSettings(); throw new Error('Signed out — please sign in again') }
-    if (res.status >= 400) throw new Error((res.json as { error?: string } | null)?.error ?? `HTTP ${res.status}`)
-    return res.json as T
+    if (res.status >= 500 && json === undefined) throw new Error(`Octavo Cloud is not responding right now (HTTP ${res.status}). Try again in a few minutes.`)
+    if (res.status >= 400) throw new Error((json as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`)
+    if (json === undefined) throw new Error('Octavo Cloud sent an unexpected answer. Check the Server setting, or try again.')
+    return json as T
   }
 
   /** Refresh and verify the entitlement token (signature checked offline with WebCrypto). */
@@ -253,9 +257,18 @@ export class CloudClient {
       const p = parts.slice(0, i).join('/')
       if (!this.app.vault.getAbstractFileByPath(p)) await this.app.vault.createFolder(p).catch(() => {})
     }
-    const path = normalizePath(`${folder}/${b.filename}`)
-    const existing = this.app.vault.getAbstractFileByPath(path)
-    const file = existing instanceof TFile ? existing : await this.app.vault.create(path, makeStub({ id: b.id, size: b.size, title: b.title }))
+    // an emailed book's name can hold characters Windows, iOS and Android do not allow ("Book: Part 1.epub")
+    const dot = b.filename.lastIndexOf('.')
+    const ext = dot > 0 ? b.filename.slice(dot) : ''
+    const base = (dot > 0 ? b.filename.slice(0, dot) : b.filename).replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Untitled'
+    // the same name may already be another book's placeholder (or a real book): only reuse this book's own
+    let file: TFile | null = null
+    for (let i = 1; !file; i++) {
+      const path = normalizePath(`${folder}/${base}${i > 1 ? ` ${i}` : ''}${ext}`)
+      const existing = this.app.vault.getAbstractFileByPath(path)
+      if (!existing) file = await this.app.vault.create(path, makeStub({ id: b.id, size: b.size, title: b.title }))
+      else if (existing instanceof TFile && existing.stat.size <= STUB_MAX && parseStub(await this.app.vault.read(existing))?.id === b.id) file = existing
+    }
     if (b.collections?.length || b.tags?.length) await this.applyCloudLabels(file, b).catch(e => console.warn('Octavo: could not apply Cloud labels', e))
     return file
   }
@@ -336,7 +349,8 @@ export class CloudClient {
     new Setting(c).setName('KOReader sync').setDesc(`Point KOReader's progress sync at ${this.s.apiBase.replace(/\/$/, '')}/kosync with your Octavo email and a sync password.`)
       .addButton(b => b.setButtonText('Set sync password').onClick(async () => {
         const pw = await new TextPromptModal(this.app, 'KOReader sync password', '', 'Choose a password for KOReader').result()
-        if (pw) { await this.api('/v1/kosync/password', { method: 'POST', body: JSON.stringify({ password: pw }) }); new Notice('KOReader sync is ready') }
+        if (!pw) return
+        try { await this.api('/v1/kosync/password', { method: 'POST', body: JSON.stringify({ password: pw }) }); new Notice('KOReader sync is ready') } catch (e) { fail(e) }
       }))
     new Setting(c).setName('Your data').setDesc('Save a copy of everything Octavo Cloud stores about you (JSON) into this vault, under Octavo/.')
       .addButton(b => b.setButtonText('Export my data').onClick(async () => {
@@ -348,7 +362,16 @@ export class CloudClient {
       .addButton(b => b.setButtonText('Sign out everywhere').onClick(async () => { try { await this.signOutEverywhere(); redraw() } catch (e) { fail(e) } }))
     new Setting(c).setName('Delete account').setDesc('Permanently delete your Octavo Cloud account and cloud library. Your vault is not touched.')
       .addButton(b => destructive(b.setButtonText('Delete account')).onClick(async () => { try { if (await this.deleteAccount()) redraw() } catch (e) { fail(e) } }))
-    new Setting(c).setName('Server').addText(t => t.setValue(this.s.apiBase).onChange(v => { this.s.apiBase = v.trim(); void this.plugin.saveSettings() }))
+    // your sign-in belongs to the server it came from: a new server means signing in again, so the token is never sent elsewhere
+    new Setting(c).setName('Server').setDesc('Changing it signs you out.').addText(t => {
+      t.setValue(this.s.apiBase)
+      t.inputEl.addEventListener('change', () => {
+        const v = t.getValue().trim().replace(/\/$/, '')
+        if (!v || v === this.s.apiBase.replace(/\/$/, '')) return
+        this.s.apiBase = v
+        void this.signOut().then(redraw)
+      })
+    })
   }
 
   /** One-line usage summary plus a small bar per quota. */
@@ -424,9 +447,11 @@ class CloudLibraryModal extends Modal {
           b.tags?.length ? b.tags.map(t => `#${t}`).join(' ') : null].filter(Boolean).join(' · ')
         new Setting(this.contentEl).setName(b.title).setDesc(desc)
           .addButton(x => x.setButtonText('Open').setCta().onClick(async () => {
-            const f = await this.client.addStubToVault(b)
-            this.close()
-            await this.client['plugin'].openInOctavo(f, this.app.workspace.getLeaf('tab'))
+            try {
+              const f = await this.client.addStubToVault(b)
+              this.close()
+              await this.client['plugin'].openInOctavo(f, this.app.workspace.getLeaf('tab'))
+            } catch (e) { new Notice(`Could not open “${b.title}”: ${(e as Error).message}`) }
           }))
       }
     }

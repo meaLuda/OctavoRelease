@@ -38,11 +38,12 @@ export function mapColor(c: unknown): HighlightColor {
   return 'yellow'
 }
 
+/** ISO time of an imported date; '' when there is none or it can't be read (never 1970). */
 export const toIso = (t: unknown): string => {
-  if (typeof t === 'number') return new Date(t < 1e12 ? t * 1000 : t).toISOString()
+  if (typeof t === 'number' && t > 0 && Number.isFinite(t)) return new Date(t < 1e12 ? t * 1000 : t).toISOString()
   // "2025-02-03 10:11:12" (KOReader) needs a T; free-form dates ("8 January 2024 21:14:03", Kindle) must be parsed as-is
   if (typeof t === 'string') { const d = new Date(/^\d{4}-\d\d-\d\d \d/.test(t) ? t.replace(' ', 'T') : t); if (!isNaN(+d)) return d.toISOString() }
-  return new Date(0).toISOString()
+  return ''
 }
 
 /** What is at a vault path: nothing, a book note (Octavo's, or a note it created for an imported book), or any other note. */

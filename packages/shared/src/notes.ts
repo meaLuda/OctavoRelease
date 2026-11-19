@@ -15,8 +15,9 @@ import { isHighlightColor } from './links'
  * visible text and note are read back from the callout so users can edit them.
  */
 export const HIGHLIGHTS_HEADING = '## Highlights'
-const META_RE = /%%octavo:(\{.*\})%%/
-const HEADER_RE = /^> \[!octavo-([a-z]+)\]([+-]?)\s?(.*)$/
+// [^\n], not `.`: a stray \r, U+2028 or U+2029 in a label or quote must not hide the highlight (it would be added again on every save)
+const META_RE = /%%octavo:(\{[^\n]*\})%%/
+const HEADER_RE = /^> \[!octavo-([a-z]+)\]([+-]?)\s?([^\n]*)$/
 
 interface Meta {
   id: string
@@ -27,6 +28,8 @@ interface Meta {
   st?: HighlightStyle
   c: string
   t?: string[]
+  /** lines in the quote, written only when it has a blank line (paragraphs), which would otherwise read as the start of the note */
+  n?: number
 }
 
 const quoteLines = (text: string) =>
@@ -38,12 +41,15 @@ export function renderHighlight(h: Highlight, link: string): string {
   if (h.anchor.pdf) { const s = h.anchor.pdf; meta.pdf = [s.page, s.beginIndex, s.beginOffset, s.endIndex, s.endOffset] }
   if (h.style !== 'highlight') meta.st = h.style
   if (h.tags?.length) meta.t = h.tags
-  const lines = [`> [!octavo-${h.color}] ${h.label ?? ''}`.trimEnd(), ...quoteLines(h.anchor.quote.exact)]
+  const quote = quoteLines(h.anchor.quote.exact)
+  if (quote.includes('>')) meta.n = quote.length
+  const label = (h.label ?? '').replace(/[\r\n\u2028\u2029]+/g, ' ') // a PDF outline title can carry line breaks
+  const lines = [`> [!octavo-${h.color}] ${label}`.trimEnd(), ...quote]
   if (h.note) lines.push('>', ...quoteLines(h.note))
   if (h.tags?.length) lines.push(`> ${h.tags.map(t => `#${t}`).join(' ')}`)
   lines.push(`> ${link}`)
   // JSON may not contain "%%" — escape it
-  lines.push(`> %%octavo:${JSON.stringify(meta).replace(/%%/g, '%\\u0025')}%% ^oct-${h.id}`)
+  lines.push(`> %%octavo:${JSON.stringify(meta).replace(/%%/g, '%\\u0025').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')}%% ^oct-${h.id}`)
   return lines.join('\n')
 }
 
@@ -67,8 +73,10 @@ export function parseHighlights(markdown: string): ParsedHighlight[] {
     try { meta = JSON.parse(META_RE.exec(body[metaIdx]!)![1]!) } catch { i = j - 1; continue }
     // content = everything before the link line (the line just before meta)
     const content = body.slice(0, Math.max(0, metaIdx - 1))
-    const tagLine = content.length && /^(#[\p{L}\p{N}_/-]+\s*)+$/u.test(content[content.length - 1]!) ? content.pop() : undefined
-    const blank = content.indexOf('')
+    // the tag line: written by Octavo (meta.t) or added below a note; a quote ending in "#1" or "#MeToo" stays text
+    const tagLike = content.length && /^(#[\p{L}\p{N}_/-]+\s*)+$/u.test(content[content.length - 1]!)
+    const tagLine = tagLike && (!meta.n || content.length - 1 > meta.n) && (meta.t?.length || content.indexOf('') >= 0 && content.indexOf('') < content.length - 1) ? content.pop() : undefined
+    const blank = meta.n && meta.n <= content.length ? (content.length > meta.n ? meta.n : -1) : content.indexOf('')
     const exact = (blank < 0 ? content : content.slice(0, blank)).join('\n')
     const note = blank < 0 ? undefined : content.slice(blank + 1).join('\n').trim() || undefined
     const color: HighlightColor = isHighlightColor(head[1]) ? head[1] : 'yellow'

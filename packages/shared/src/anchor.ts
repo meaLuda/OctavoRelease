@@ -47,8 +47,6 @@ export function makeQuote(fullText: string, start: number, end: number, context 
   }
 }
 
-const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-
 /** Length of the common suffix of a and b (used to score prefix context). */
 function commonSuffix(a: string, b: string): number {
   let i = 0
@@ -91,21 +89,28 @@ export function findQuote(text: string, quote: TextQuote, hint?: number): QuoteM
   return findQuoteLoose(text, quote)
 }
 
-/** Whitespace- and case-insensitive search, mapped back to original offsets. */
+/**
+ * One character as the loose search compares it: no whitespace (paragraphs in a book's text can be joined with no
+ * space between them), no soft hyphens, ligatures spelt out (ﬁ → fi, as quotes from Kindle or Zotero have them) and
+ * lower case only when that keeps it one character (Turkish İ would otherwise shift every offset after it).
+ */
+function fold(ch: string): string {
+  if (/\s/.test(ch) || ch === '\u00ad') return ''
+  if (ch >= '\ufb00' && ch <= '\ufb06') return ch.normalize('NFKC').toLowerCase()
+  const lc = ch.toLowerCase()
+  return lc.length === 1 ? lc : ch
+}
+
+/** Search ignoring whitespace, case, soft hyphens and ligatures, mapped back to original offsets. */
 function findQuoteLoose(text: string, quote: TextQuote): QuoteMatch | null {
-  const target = norm(quote.exact)
+  const target = quote.exact.split('').map(fold).join('') // by UTF-16 unit, as the text below
   if (!target) return null
-  // build normalized text with an index map
+  // build the folded text with an index map
   const map: number[] = []
   let out = ''
-  let lastSpace = true
   for (let i = 0; i < text.length; i++) {
-    const ch = text[i]!
-    if (/\s/.test(ch)) {
-      if (!lastSpace) { out += ' '; map.push(i); lastSpace = true }
-    } else {
-      out += ch.toLowerCase(); map.push(i); lastSpace = false
-    }
+    const f = fold(text[i]!)
+    for (const c of f) { out += c; map.push(i) }
   }
   const k = out.indexOf(target)
   if (k < 0) return null

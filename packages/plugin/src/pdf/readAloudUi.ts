@@ -61,15 +61,22 @@ export class PdfReadAloudUi {
   /** Speak button: start at the current page, or pause/resume a running session. */
   toggle() {
     if (this.ctl?.active) this.ctl.toggle()
-    else void this.play(this.host.currentPage())
+    else if (!this.starting) { this.starting = true; void this.play(this.host.currentPage()).finally(() => { this.starting = false }) }
   }
+  /** A Speak tap while the engine is still being picked does not start a second reading. */
+  private starting = false
 
   /** Start reading at `page`, optionally at the sentence containing text item `item` (char `offset`). */
   async play(page: number, item?: number, offset?: number) {
     this.ctl?.dispose()
+    this.ctl = null
     this.noTextShown = false
+    // the engine can take a moment (a Cloud plan check): a newer play, or the view closing, in the meantime wins
+    const run = ++this.runs
+    const engine = await this.engine()
+    if (run !== this.runs || this.disposed) return
     const ctl = new PdfReadAloud({
-      engine: await this.engine(),
+      engine,
       pageCount: this.host.pageCount(),
       rate: this.plugin.settings.tts.rate,
       sections: this.host.sections(),
@@ -93,7 +100,9 @@ export class PdfReadAloudUi {
   }
 
   stop() { this.ctl?.stop() }
-  dispose() { this.ctl?.dispose(); this.ctl = null; window.clearInterval(this.infoTimer); this.bar.remove() }
+  dispose() { this.disposed = true; this.runs++; this.ctl?.dispose(); this.ctl = null; window.clearInterval(this.infoTimer); this.bar.remove() }
+  private runs = 0
+  private disposed = false
 
   /** Re-apply the highlight after a page's text layer is (re)rendered. */
   onTextLayer(n: number) { if (this.ctl?.active && this.ranges.some(r => r.page === n)) this.highlight(this.ctl.page, this.ranges, false) }

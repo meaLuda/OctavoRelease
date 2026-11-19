@@ -24,4 +24,9 @@ describe('PDF++ region links', () => {
   it('splits a linktext without a subpath', () => {
     expect(splitLinktext('Folder/Book.pdf')).toEqual({ path: 'Folder/Book.pdf', subpath: '' })
   })
+
+  it('a damaged selection still opens its page; rect corners in any order are put in order', () => {
+    expect(parseSubpath('#page=3&selection=1,2,3')).toEqual({ type: 'page', page: 3, color: undefined })
+    expect(parseSubpath('#page=3&rect=10,20,5,8')).toMatchObject({ type: 'rect', rect: [5, 8, 10, 20] })
+  })
 })

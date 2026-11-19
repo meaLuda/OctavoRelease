@@ -1,3 +1,4 @@
+import { Notice } from 'obsidian'
 import type { View } from '@octavo/foliate/view.js'
 import type { OctavoSettings } from '../settings'
 
@@ -9,13 +10,19 @@ import type { OctavoSettings } from '../settings'
 export class Speaker {
   active = false
   private utter: SpeechSynthesisUtterance | null = null
+  /** The view's word highlighter, passed again when a new section starts. */
+  highlight?: (range: Range) => void
   constructor(private foliate: View | null, private opts: OctavoSettings['tts'], private onEnd: () => void) {}
 
+  /** Some Android WebViews have no system speech at all. */
+  static get available(): boolean { return typeof speechSynthesis !== 'undefined' }
+
   static voice(name: string): SpeechSynthesisVoice | undefined {
-    return name ? speechSynthesis.getVoices().find(v => v.name === name) : undefined
+    return name && Speaker.available ? speechSynthesis.getVoices().find(v => v.name === name) : undefined
   }
 
   static say(text: string, opts: OctavoSettings['tts']) {
+    if (!Speaker.available) { new Notice('System voices are not available on this device'); return }
     speechSynthesis.cancel()
     const u = new SpeechSynthesisUtterance(text)
     u.rate = opts.rate
@@ -25,6 +32,7 @@ export class Speaker {
   }
 
   start() {
+    if (!Speaker.available) { new Notice('System voices are not available on this device'); this.finish(); return }
     this.active = true
     const ssml = this.foliate?.tts?.start()
     if (ssml) this.speak(ssml)
@@ -33,7 +41,7 @@ export class Speaker {
 
   stop() {
     this.active = false
-    speechSynthesis.cancel()
+    if (Speaker.available) speechSynthesis.cancel()
   }
 
   private speak(ssml: string): void {
@@ -51,7 +59,8 @@ export class Speaker {
       if (mark !== undefined) this.foliate?.tts?.setMark(mark)
     }
     u.onend = () => { if (this.active) void this.advance() }
-    u.onerror = () => this.finish()
+    // "interrupted" or "canceled": stopped, or another Speak took over; anything else is a real failure worth saying
+    u.onerror = e => { if (e.error !== 'interrupted' && e.error !== 'canceled') new Notice(`Read-aloud stopped: ${e.error}`); this.finish() }
     this.utter = u
     speechSynthesis.speak(u)
   }
@@ -64,7 +73,7 @@ export class Speaker {
     await this.foliate?.renderer.nextSection?.()
     if (!this.active || !this.foliate || this.foliate.renderer.primaryIndex === before) return this.finish()
     this.foliate.tts = null
-    await this.foliate.initTTS('word')
+    await this.foliate.initTTS('word', undefined, this.highlight) // keep the word highlight and ruler in later sections
     this.start()
   }
 
@@ -101,6 +110,8 @@ export class CloudSpeaker {
   private audio = new Audio()
   private cancel = { cancelled: false }
   private next: { ssml: string; url: Promise<string> } | null = null
+  /** The view's word highlighter, passed again when a new section starts. */
+  highlight?: (range: Range) => void
   constructor(private foliate: View | null, private fetchUrl: (text: string, signal: { cancelled: boolean }) => Promise<string>, private rate: number, private onEnd: () => void, private onError: (e: Error) => void) {}
 
   start() {
@@ -157,7 +168,7 @@ export class CloudSpeaker {
     await this.foliate?.renderer.nextSection?.()
     if (!this.active || !this.foliate || this.foliate.renderer.primaryIndex === before) return this.finish()
     this.foliate.tts = null
-    await this.foliate.initTTS('word')
+    await this.foliate.initTTS('word', undefined, this.highlight) // keep the word highlight and ruler in later sections
     this.start()
   }
 

@@ -41,4 +41,13 @@ describe('reading clock', () => {
     c.stop()
     expect(c.running).toBe(false)
   })
+  it('knows the day it started on, and when midnight has passed', () => {
+    let now = new Date(2026, 10, 18, 23, 50).getTime()
+    const c = new ReadingClock(() => now)
+    c.start()
+    expect(c.day).toBe('2026-11-18')
+    expect(c.pastMidnight).toBe(false)
+    now = new Date(2026, 10, 19, 0, 5).getTime()
+    expect(c.pastMidnight).toBe(true)
+  })
 })

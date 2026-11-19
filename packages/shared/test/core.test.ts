@@ -19,6 +19,13 @@ describe('anchor', () => {
     const m = findQuote('Hello   WORLD\nagain', { exact: 'hello world again', prefix: '', suffix: '' })!
     expect(m).toMatchObject({ start: 0, end: 19 })
   })
+  it('loose matching skips soft hyphens, spells out ligatures, joins paragraphs and keeps offsets after Turkish İ', () => {
+    expect(findQuote('a de\u00adfinition here', { exact: 'definition', prefix: '', suffix: '' })).toMatchObject({ start: 2, end: 13 })
+    expect(findQuote('the \ufb01rst one', { exact: 'first', prefix: '', suffix: '' })).toMatchObject({ start: 4, end: 8 })
+    expect(findQuote('end of para.Next para', { exact: 'para. Next', prefix: '', suffix: '' })).toMatchObject({ start: 7, end: 16 })
+    const t = 'İstanbul and the BOSPHORUS'
+    expect(findQuote(t, { exact: 'the bosphorus', prefix: '', suffix: '' })).toMatchObject({ start: t.indexOf('the'), end: t.length })
+  })
   it('returns null when absent', () => {
     expect(findQuote(text, { exact: 'zebra', prefix: '', suffix: '' })).toBeNull()
   })
@@ -40,7 +47,7 @@ describe('links', () => {
     expect(parseSubpath('#page=7&rect=1,2,3,4')).toMatchObject({ type: 'rect', rect: [1, 2, 3, 4] })
     expect(parseSubpath('#page=2')).toEqual({ type: 'page', page: 2, color: undefined })
     expect(parseSubpath('#page=x')).toBeNull()
-    expect(parseSubpath('#page=1&selection=1,2,3')).toBeNull()
+    expect(parseSubpath('#page=1&selection=1,2,3')).toEqual({ type: 'page', page: 1, color: undefined }) // damaged selection: still its page
     expect(parseSubpath('#Some heading')).toBeNull()
   })
   it('formats PDF selections in PDF++ grammar', () => {
@@ -61,6 +68,29 @@ describe('book note blocks', () => {
     const md = upsertHighlight('# Book\n', h, '[[b.epub#cfi=x|↗]]')
     const [p] = parseHighlights(md)
     expect(p).toMatchObject({ id: h.id, color: 'yellow', note: h.note, tags: h.tags, label: h.label, anchor: h.anchor })
+  })
+  it('a label with a line break, or a quote ending in a hashtag, still reads back as one highlight', () => {
+    const base = hl({})
+    const h = { ...base, label: 'Chapter\r\nOne', anchor: { ...base.anchor, quote: { ...base.anchor.quote, exact: 'Chapter One\n#1', prefix: 'a\u2028b' } } }
+    const md = upsertHighlight('# Book\n', h, 'L')
+    const parsed = parseHighlights(md)
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0]!.anchor.quote.exact).toBe('Chapter One\n#1')
+    expect(parsed[0]!.tags).toBeUndefined()
+    expect(parseHighlights(upsertHighlight(md, { ...h, color: 'blue' }, 'L'))).toHaveLength(1)
+  })
+  it('round-trips a highlight across paragraphs, with and without a note', () => {
+    const two = (note?: string) => {
+      const base = hl({ note })
+      const h = { ...base, anchor: { ...base.anchor, quote: { ...base.anchor.quote, exact: 'First paragraph.\n\nSecond paragraph.' } } }
+      return [h, parseHighlights(upsertHighlight('# Book\n', h, 'L'))[0]!] as const
+    }
+    const [h1, p1] = two('A thought\n\nmore')
+    expect(p1.anchor.quote.exact).toBe(h1.anchor.quote.exact)
+    expect(p1.note).toBe('A thought\n\nmore')
+    const [h2, p2] = two(undefined)
+    expect(p2.anchor.quote.exact).toBe(h2.anchor.quote.exact)
+    expect(p2.note).toBeUndefined()
   })
   it('round-trips non-ASCII tags without leaking the tag line into the note', () => {
     const h = hl({ note: 'Pensée', tags: ['café', 'überblick/ch-2'] })

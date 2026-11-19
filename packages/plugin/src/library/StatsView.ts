@@ -15,6 +15,7 @@ export class StatsView extends ItemView {
   getIcon() { return 'bar-chart-3' }
 
   async onOpen() {
+    await this.plugin.ready // restored at startup before settings have loaded
     this.render()
     // a session logged while this is open (a book closed in another tab) shows up
     this.registerInterval(window.setInterval(() => this.render(), 60_000))

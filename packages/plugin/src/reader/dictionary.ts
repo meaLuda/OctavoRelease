@@ -59,3 +59,37 @@ export class OfflineDictionary {
     this.saveTimer = window.setTimeout(() => void this.app.vault.adapter.write(this.path, JSON.stringify(this.entries)).catch(() => {}), 1500)
   }
 }
+
+/** The forms of a selected word to look up, best first: punctuation off, as written ("Monday", "Paris"), then lower case. */
+export function lookupForms(selected: string): string[] {
+  const w = selected.trim().replace(/^[“”"'’‘.,;:!?()[\]]+|[“”"'’‘.,;:!?()[\]]+$/g, '').replace(/\s+/g, ' ')
+  return [...new Set([w, w.toLowerCase()])].filter(Boolean)
+}
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—', hellip: '…' }
+/** Wiktionary definition HTML → plain text: tags off, entities decoded (repeatedly: "&amp;amp;" happens). */
+export function plainDefinition(html: string): string {
+  let s = html.replace(/<[^>]+>/g, '')
+  for (let i = 0; i < 3 && /&[#a-z0-9]+;/i.test(s); i++) {
+    s = s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) =>
+      e[0] === '#' ? String.fromCodePoint(e[1]?.toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENTITIES[e.toLowerCase()] ?? m)
+  }
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+type Sense = { partOfSpeech?: string; definitions?: Array<{ definition?: string }> }
+/**
+ * The first two parts of speech that have a real definition, as Markdown. Skips the empty first entries Wiktionary
+ * often returns ("book"), symbols and language codes ("run" → "ISO 639-2 language code for Kirundi").
+ */
+export function wiktionaryDefinition(json: unknown): string {
+  const en = ((json as { en?: Sense[] } | null)?.en ?? [])
+  const out: string[] = []
+  for (const p of en) {
+    if (!p.partOfSpeech || /^symbol$/i.test(p.partOfSpeech)) continue
+    const d = (p.definitions ?? []).map(x => plainDefinition(x.definition ?? '')).find(x => x && !/language code/i.test(x))
+    if (d) out.push(`*${p.partOfSpeech}* — ${d}`)
+    if (out.length === 2) break
+  }
+  return out.join('\n\n')
+}

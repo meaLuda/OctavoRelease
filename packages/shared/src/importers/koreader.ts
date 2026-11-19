@@ -29,7 +29,9 @@ export function importKoreaderSidecar(lua: string, bookPath?: string): ImportedB
   let anns: Ann[] = Array.isArray(t.annotations) ? t.annotations : []
   if (!anns.length && t.bookmarks) {
     const bm: any[] = Array.isArray(t.bookmarks) ? t.bookmarks : Object.values(t.bookmarks)
-    anns = bm.filter(b => b.highlighted || b.text).map(b => ({ text: b.notes ?? b.text, note: b.text !== b.notes ? undefined : undefined, chapter: b.chapter, datetime: b.datetime, pageno: typeof b.page === 'number' ? b.page : undefined }))
+    // legacy: `notes` is the highlighted text and `text` the reader's note (KOReader fills it with "Page n …" until edited);
+    // plain page bookmarks are not highlights
+    anns = bm.filter(b => b.highlighted).map(b => ({ text: b.notes ?? b.text, note: b.notes && typeof b.text === 'string' && b.text !== b.notes && !/^Page \S+ /.test(b.text) ? b.text : undefined, chapter: b.chapter, datetime: b.datetime, pageno: typeof b.page === 'number' ? b.page : undefined }))
   }
   return fromAnnotations(anns, { ...props, file: bookPath ?? (typeof t.doc_path === 'string' ? t.doc_path : undefined) }, typeof t.percent_finished === 'number' ? t.percent_finished : undefined, t.summary?.status === 'complete')
 }

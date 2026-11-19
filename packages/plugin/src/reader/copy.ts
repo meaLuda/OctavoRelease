@@ -28,7 +28,8 @@ const shorten = (s: string) => { const t = s.replace(/\s+/g, ' ').trim(); return
 export function copyVars(plugin: OctavoPlugin, src: CopySource): TemplateVars {
   const props = src.note ? plugin.library.getProps(src.note) : {}
   const author = Array.isArray(props.author) ? props.author.join(', ') : props.author
-  const link = plugin.app.fileManager.generateMarkdownLink(src.book, src.note?.path ?? '', src.subpath, shorten(src.text)).replace(/^!/, '')
+  // written from the vault root: the copy is pasted into some other note, and a path relative to the book note would break there
+  const link = plugin.app.fileManager.generateMarkdownLink(src.book, '', src.subpath, shorten(src.text)).replace(/^!/, '')
   return {
     text: src.text.trim(),
     page: src.page ?? '',
@@ -44,8 +45,13 @@ export function copyVars(plugin: OctavoPlugin, src: CopySource): TemplateVars {
 }
 
 async function write(text: string, message: string) {
-  await navigator.clipboard.writeText(text)
-  new Notice(message)
+  try {
+    await navigator.clipboard.writeText(text)
+    new Notice(message)
+  } catch (e) {
+    console.error('Octavo: copy failed', e)
+    new Notice('Octavo could not copy to the clipboard. Click in the book and try again.')
+  }
 }
 
 export async function copyAs(plugin: OctavoPlugin, format: CopyFormat, src: CopySource): Promise<string> {
@@ -67,9 +73,14 @@ export async function copyCitation(plugin: OctavoPlugin, src: CopySource): Promi
 export function showCopyMenu(plugin: OctavoPlugin, e: MouseEvent, source: () => Promise<CopySource | null>, done?: () => void) {
   const m = new Menu()
   const run = (fn: (src: CopySource) => Promise<unknown>) => async () => {
-    const src = await source()
-    done?.()
-    if (src) await fn(src)
+    try {
+      const src = await source()
+      done?.()
+      if (src) await fn(src)
+    } catch (e) {
+      console.error('Octavo: copy failed', e)
+      new Notice(`Octavo could not copy that: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
   for (const f of COPY_FORMATS) m.addItem(i => i.setTitle(`Copy as ${COPY_FORMAT_NAMES[f].toLowerCase()}`).setIcon(f === 'link' ? 'link' : f === 'callout' ? 'message-square-quote' : 'quote').onClick(run(src => copyAs(plugin, f, src))))
   m.addSeparator()

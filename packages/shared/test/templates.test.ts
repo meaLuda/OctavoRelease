@@ -219,3 +219,11 @@ describe('zotero importer', () => {
     expect(resolveLiteratureNotePath('Books', 'New', 'book-a', () => undefined)).toBe('Books/New highlights.md')
   })
 })
+
+describe('literature note templates', () => {
+  it('a placeholder the template already quotes stays valid YAML ("Dune: Messiah")', async () => {
+    const { buildLiteratureNote } = await import('../src/literature')
+    const note = buildLiteratureNote({ book: 'Dune: Messiah', source: '[[d.epub]]', highlights: [], date: '2026-11-19', noteTemplate: '---\ntitle: "{{book}}"\n---\n{{highlights}}' })
+    expect(note).toMatch(/^---\ntitle: "Dune: Messiah"\n/)
+  })
+})

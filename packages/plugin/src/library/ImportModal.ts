@@ -141,7 +141,11 @@ export async function importBooks(plugin: OctavoPlugin, books: ImportedBook[], o
     if (b.position?.cfi && !cur.position) props.position = b.position.cfi
     if (b.position?.fraction !== undefined && !(Number(cur.progress) > 0)) props.progress = Math.round(b.position.fraction * 1000) / 1000
     if (b.citekey && !citekeyFrom(cur)) props.citekey = b.citekey
-    if (b.status && (!cur.status || cur.status === 'reading')) props.status = b.status
+    if (b.status && (!cur.status || cur.status === 'reading')) {
+      props.status = b.status
+      // finished when last read (the import's best guess), so it counts for that year and not for today
+      if (b.status === 'finished' && !cur.finished) props.finished = moment(b.lastRead || Date.now()).format('YYYY-MM-DD')
+    }
     if (b.lastRead && !cur['last-read']) props['last-read'] = moment(b.lastRead).format('YYYY-MM-DDTHH:mm')
     await plugin.library.setProps(note, props)
   }

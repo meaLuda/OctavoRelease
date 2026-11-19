@@ -129,6 +129,15 @@ return {
     expect(books).toHaveLength(2)
     expect(books[1]).toMatchObject({ title: 'T2', bookPath: '/mnt/onboard/T2.pdf', highlights: [{ color: 'pink', label: 'p. 2', anchor: { quote: { exact: 'q2' } } }] })
   })
+  it('legacy sidecar: the note is kept, and plain page bookmarks are not imported', () => {
+    const lua = 'return { ["bookmarks"] = { [1] = { ["highlighted"] = true, ["notes"] = "the highlighted text", ["text"] = "my note", ["page"] = 3 }, [2] = { ["highlighted"] = true, ["notes"] = "other", ["text"] = "Page 9 2024-01-01 @ 10:00", ["page"] = 9 }, [3] = { ["text"] = "Page 12", ["page"] = 12 } } }'
+    const hs = importKoreaderSidecar(lua).highlights
+    expect(hs.map(h => [h.anchor.quote.exact, h.note])).toEqual([['the highlighted text', 'my note'], ['other', undefined]])
+  })
+  it('Annotator notes saved with Windows line endings import', () => {
+    const md = '---\r\nannotation-target: Books/x.epub\r\n---\r\n>%%\r\n>```annotation-json\r\n>{"target":[{"selector":[{"type":"TextQuoteSelector","exact":"e","prefix":"","suffix":""}]}]}\r\n>```\r\n>%%\r\n'
+    expect(importAnnotator(md)?.highlights.length).toBe(1)
+  })
   it('uses the sidecar doc_path when no book path is given (PDF titles are often junk)', () => {
     const lua = 'return { ["doc_path"] = "/mnt/onboard/Books/Wood.pdf", ["doc_props"] = { ["title"] = "document1" }, ["annotations"] = { [1] = { ["text"] = "x", ["pageno"] = 3, ["page"] = 3 } } }'
     expect(importKoreaderSidecar(lua).bookPath).toBe('/mnt/onboard/Books/Wood.pdf')
@@ -180,5 +189,16 @@ describe('import target note', () => {
     vault.set('Books/Deep Work (Zotero).md', 'other')
     expect(importNotePath('Books', 'Deep Work', 'Zotero', kind)).toBeNull()
     expect(importNotePath('Books', 'A/B: C?', 'Kindle', kind)).toBe('Books/A B C.md')
+  })
+})
+
+describe('import dates', () => {
+  it('a highlight with no readable date gets none, not 1 January 1970', async () => {
+    const { toIso } = await import('../src/importers/types')
+    expect(toIso(undefined)).toBe('')
+    expect(toIso(0)).toBe('')
+    expect(toIso('not a date')).toBe('')
+    expect(toIso(1700000000)).toBe('2023-11-14T22:13:20.000Z')
+    expect(toIso('2025-02-03 10:11:12')).toMatch(/^2025-02-03T/)
   })
 })

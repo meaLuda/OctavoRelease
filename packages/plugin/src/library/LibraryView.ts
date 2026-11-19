@@ -56,7 +56,8 @@ export class LibraryView extends ItemView {
   /** Smart collection whose filters are loaded for editing ("Update" replaces its spec). */
   private editingSmart: string | null = null
   private items: BookItem[] = []
-  private blobUrls: string[] = []
+  /** One image URL per cover (by file version), reused across redraws instead of a new one each time. */
+  private coverUrls = new Map<string, string>()
   private queue: BookItem[] = []
   private working = false
   private io: IntersectionObserver | null = null
@@ -78,7 +79,8 @@ export class LibraryView extends ItemView {
     // A copy can arrive empty and grow, so a book file's first 'modify' also counts (PDF size threshold).
     const watched = (f: unknown): f is TFile => this.plugin.settings.library.watch && f instanceof TFile && this.isBookExt(f)
     this.registerEvent(this.app.vault.on('create', f => { if (watched(f) && this.isCandidate(f)) this.refreshSoon() }))
-    this.registerEvent(this.app.vault.on('modify', f => { if (watched(f) && !this.items.some(i => i.file === f) && this.isCandidate(f)) this.refreshSoon() }))
+    // a book listed while still empty (a copy in progress) is redrawn once it has content, for its cover and placeholder check
+    this.registerEvent(this.app.vault.on('modify', f => { if (watched(f) && (!this.items.some(i => i.file === f) ? this.isCandidate(f) : this.items.some(i => i.file === f && (i.cloud || !i.cover)))) this.refreshSoon() }))
     this.registerEvent(this.app.vault.on('delete', () => this.refreshSoon()))
     this.registerEvent(this.app.vault.on('rename', () => this.refreshSoon()))
     this.refresh()
@@ -87,13 +89,31 @@ export class LibraryView extends ItemView {
 
   async onClose() {
     this.io?.disconnect()
-    for (const u of this.blobUrls) URL.revokeObjectURL(u)
+    for (const u of this.coverUrls.values()) URL.revokeObjectURL(u)
+    this.coverUrls.clear()
   }
 
   // ───────────────────────── data ─────────────────────────
 
   private isBookExt(f: TFile): boolean {
     return (BOOK_EXTENSIONS as readonly string[]).includes(f.extension) || f.extension === 'pdf'
+  }
+
+  /** Small files read to tell a Cloud placeholder from a tiny or still-arriving book (path → [mtime, is placeholder]). */
+  private stubCheck = new Map<string, [number, boolean]>()
+
+  /** A Cloud placeholder: small, and its text says so. Until a small file is read it counts as one; then the library redraws. */
+  private isStub(f: TFile): boolean {
+    if (f.stat.size === 0 || f.stat.size > STUB_MAX) return false
+    const known = this.stubCheck.get(f.path)
+    if (known && known[0] === f.stat.mtime) return known[1]
+    this.stubCheck.set(f.path, [f.stat.mtime, true])
+    void this.app.vault.read(f).then(t => {
+      const stub = !!parseStub(t)
+      this.stubCheck.set(f.path, [f.stat.mtime, stub])
+      if (!stub) this.refreshSoon()
+    }).catch(() => {})
+    return true
   }
 
   private isCandidate(f: TFile): boolean {
@@ -105,7 +125,7 @@ export class LibraryView extends ItemView {
     }
     if (f.extension === 'pdf') {
       // PDFs: books, not receipts. Small PDFs count only once you've opened them as a book.
-      return !!this.plugin.library.noteFor(f) || f.stat.size >= lib.minPdfMB * 1024 * 1024 || f.stat.size <= STUB_MAX
+      return !!this.plugin.library.noteFor(f) || f.stat.size >= lib.minPdfMB * 1024 * 1024 || this.isStub(f)
     }
     return true
   }
@@ -134,7 +154,7 @@ export class LibraryView extends ItemView {
         highlights: Number(fm.highlights) || 0,
         cover: coverFile ? this.app.vault.getResourcePath(coverFile) : null,
         format: f.extension,
-        cloud: f.stat.size <= STUB_MAX,
+        cloud: this.isStub(f),
       })
     }
     return out
@@ -409,12 +429,13 @@ export class LibraryView extends ItemView {
   /** Rename (to = string) or delete (to = null) a collection in every book note that has it, and in smart collections. */
   async renameCollection(from: string, to: string | null) {
     let n = 0
-    for (const it of this.items) {
-      if (!it.note) continue
-      const change = collectionEdit(this.plugin.library.getProps(it.note).collections, from, to)
+    // every book note, hidden books and books outside the chosen folders included, not just the ones on screen
+    for (const { note } of this.plugin.library.allBooks()) {
+      const change = collectionEdit(this.plugin.library.getProps(note).collections, from, to)
       if (!change) continue
-      await this.plugin.library.setProps(it.note, change)
-      it.collections = change.collections ?? []
+      await this.plugin.library.setProps(note, change)
+      const it = this.items.find(i => i.note === note)
+      if (it) it.collections = change.collections ?? []
       n++
     }
     const lib = this.plugin.settings.library
@@ -520,13 +541,15 @@ export class LibraryView extends ItemView {
   private async ensureNote(it: BookItem): Promise<TFile> {
     if (it.note) return it.note
     const clean = cleanBookName(it.file.name)
-    it.note = await this.plugin.library.ensureNote(it.file, { id: `lib-${it.file.stat.size.toString(36)}`, title: it.title || clean.title, author: it.author, format: it.format })
+    it.note = await this.plugin.library.ensureNote(it.file, { id: `lib-${it.file.stat.size.toString(36)}`, title: it.title || clean.title, author: it.author, format: it.format, unopened: true })
     return it.note
   }
 
   private async setStatus(it: BookItem, st: string) {
-    const note = await this.ensureNote(it)
-    await this.plugin.library.setProps(note, { status: st, ...(st === 'finished' ? { finished: moment().format('YYYY-MM-DD'), progress: 1 } : {}) })
+    try {
+      const note = await this.ensureNote(it)
+      await this.plugin.library.setProps(note, { status: st, ...(st === 'finished' ? { finished: moment().format('YYYY-MM-DD'), progress: 1 } : {}) })
+    } catch (e) { new Notice(`Could not update “${it.title}”: ${(e as Error).message}`) }
     this.refreshSoon()
   }
 
@@ -546,9 +569,11 @@ export class LibraryView extends ItemView {
   }
 
   private async editCollections(it: BookItem, fn: (c: string[]) => string[], refresh = true) {
-    const note = await this.ensureNote(it)
     const next = fn(it.collections)
-    await this.plugin.library.setProps(note, { collections: next.length ? next : undefined })
+    try {
+      const note = await this.ensureNote(it)
+      await this.plugin.library.setProps(note, { collections: next.length ? next : undefined })
+    } catch (e) { new Notice(`Could not update “${it.title}”: ${(e as Error).message}`); return }
     it.collections = next
     if (refresh) this.refreshSoon()
   }
@@ -560,13 +585,24 @@ export class LibraryView extends ItemView {
       const folder = normalizePath(this.plugin.settings.library.folders[0] || 'Library')
       if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder).catch(() => {})
       let n = 0
+      const already: string[] = [], failed: string[] = []
       for (const f of Array.from(input.files ?? [])) {
-        let path = normalizePath(`${folder}/${f.name}`)
-        if (this.app.vault.getAbstractFileByPath(path)) continue
-        await this.app.vault.createBinary(path, await f.arrayBuffer())
-        n++
+        const path = normalizePath(`${folder}/${f.name}`)
+        if (this.app.vault.getAbstractFileByPath(path)) { already.push(f.name); continue }
+        try {
+          const file = await this.app.vault.createBinary(path, await f.arrayBuffer())
+          // a small PDF would be taken for a document and not listed: a book you add on purpose gets its note
+          if (file.extension === 'pdf' && file.stat.size < this.plugin.settings.library.minPdfMB * 1024 * 1024) {
+            const clean = cleanBookName(file.name)
+            await this.plugin.library.ensureNote(file, { id: `lib-${file.stat.size.toString(36)}`, title: clean.title, author: clean.author, format: 'pdf', unopened: true })
+          }
+          n++
+        } catch (e) { failed.push(`${f.name} (${(e as Error).message})`) }
       }
-      new Notice(`Added ${n} book${n === 1 ? '' : 's'} to ${folder}`)
+      const parts = [`Added ${n} book${n === 1 ? '' : 's'} to ${folder}.`]
+      if (already.length) parts.push(`Already there: ${already.join(', ')}.`)
+      if (failed.length) parts.push(`Could not add: ${failed.join(', ')}.`)
+      new Notice(parts.join(' '), failed.length ? 0 : undefined)
       this.refresh()
     }
     input.click()
@@ -589,7 +625,12 @@ export class LibraryView extends ItemView {
         const key = metaKey(it.file.path, it.file.stat.mtime, it.file.stat.size)
         let m = await metaCache.get(key).catch(() => undefined)
         if (!m) {
-          m = { key, at: Date.now(), ...(await this.extract(it).catch(() => ({}))) }
+          // a PDF still syncing or cut short can make pdf.js wait forever: give up on this one and go on with the rest
+          let timer = 0
+          const timedOut = new Promise<'timeout'>(r => { timer = window.setTimeout(() => r('timeout'), 30_000) })
+          const got = await Promise.race([this.extract(it).catch(() => ({})), timedOut]).finally(() => window.clearTimeout(timer))
+          if (got === 'timeout') continue // not cached: tried again next time the library opens
+          m = { key, at: Date.now(), ...got }
           await metaCache.put(m).catch(() => {})
         }
         this.apply(it, m)
@@ -614,7 +655,11 @@ export class LibraryView extends ItemView {
         return { title: isJunkTitle(t) ? undefined : tidyTitle(t), author: normalizeAuthors(info.Author), cover }
       } finally { await doc.destroy() }
     }
-    const blob = new Blob([await this.app.vault.readBinary(it.file)])
+    // as the reader does: a blob from the resource URL is backed by the file on disk, so a 300 MB comic is not
+    // loaded into memory (twice) just to take its cover
+    let blob: Blob | null = null
+    try { const res = await fetch(url); if (res.ok) blob = await res.blob() } catch { /* fall back */ }
+    blob ??= new Blob([await this.app.vault.readBinary(it.file)])
     const book: Book & { destroy?(): void } = await makeBook(new File([blob], it.file.name))
     const md = book.metadata ?? {}
     const title = typeof md.title === 'string' ? md.title : md.title ? Object.values(md.title)[0] : undefined
@@ -624,14 +669,16 @@ export class LibraryView extends ItemView {
     return { title, author: normalizeAuthors(authors), cover: raw ? await thumb(raw) : null }
   }
 
-  private apply(it: BookItem, m: { title?: string; author?: string; cover?: Blob | null }) {
+  private apply(it: BookItem, m: { key?: string; title?: string; author?: string; cover?: Blob | null }) {
     if (!it.note) {
       if (m.title && !isJunkTitle(m.title)) it.title = m.title
       if (m.author) it.author = normalizeAuthors(m.author)
     }
     if (!it.cover && m.cover) {
-      it.cover = URL.createObjectURL(m.cover)
-      this.blobUrls.push(it.cover)
+      const k = m.key ?? it.path
+      let url = this.coverUrls.get(k)
+      if (!url) { url = URL.createObjectURL(m.cover); this.coverUrls.set(k, url) }
+      it.cover = url
     }
     // update this card in place
     for (const card of Array.from(this.contentEl.querySelectorAll<HTMLElement>('.is-placeholder'))) {
@@ -659,4 +706,3 @@ async function thumb(blob: Blob, width = 300): Promise<Blob> {
 
 const toList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? [v] : [])
 const hash = (s: string) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return Math.abs(h) }
-void parseStub

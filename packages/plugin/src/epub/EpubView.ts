@@ -126,6 +126,8 @@ export class EpubView extends FileView {
     })
     this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.clock.pause(); void this.savePosition(true) } else { this.clock.resume(); this.awake.onVisible() } })
     this.registerEvent(this.app.workspace.on('css-change', () => this.applyLook()))
+    // night light warms gradually from 19:00 to 21:00 (and fades 06:00 to 07:00): follow the clock while reading
+    this.registerInterval(window.setInterval(() => { if (this.plugin.settings.nightLight) this.applyLook() }, 10 * 60_000))
     this.registerEvent(this.app.workspace.on('active-leaf-change', l => { if (l !== this.leaf) this.containerEl.doc.body.removeClass('octavo-immersive') }))
     this.registerEvent(this.app.metadataCache.on('resolved', () => this.refreshBacklinks()))
     this.registerEvent(this.app.vault.on('modify', f => { if (f === this.note) void this.reloadHighlightsFromNote() }))
@@ -222,6 +224,9 @@ export class EpubView extends FileView {
   }
 
   private async closeBook() {
+    // "Back to page 37" belongs to this book, not the next one opened in this tab
+    window.clearTimeout(this.backTimer)
+    this.chrome?.hideBack()
     // a save still waiting from a page turn must not land in the next book's note
     window.clearTimeout(this.saveTimer)
     this.stopAutoScroll()
@@ -263,6 +268,8 @@ export class EpubView extends FileView {
     super.setEphemeralState?.(state)
     const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
+    // a link Octavo cannot use (a heading, a page number) opens the book where you left off, and says so
+    if (parseSubpath(sub)?.type !== 'cfi') { new Notice('Octavo could not find that place in the book, so it opened where you left off.'); return }
     if (!this.ready) { this.pendingSubpath = sub; return }
     void this.navigateSubpath(sub)
   }
@@ -344,7 +351,7 @@ export class EpubView extends FileView {
     void Promise.all(r.getContents().map(c => c.doc.fonts?.ready)).then(() => window.requestAnimationFrame(hold))
   }
 
-  private applyLook() {
+  applyLook() {
     if (!this.foliate?.renderer) return
     const s = forBook(this.plugin.settings, this.bookId)
     const look = resolveLook(s, this.containerEl.doc.body.hasClass('theme-dark'))
@@ -553,7 +560,7 @@ export class EpubView extends FileView {
     const fraction = Math.round((this.loc.fraction ?? 0) * 1000) / 1000
     const props = this.plugin.library.getProps(this.note)
     if (!force && props.position === this.loc.cfi) return
-    const patch: Record<string, unknown> = { position: this.loc.cfi, progress: fraction, 'last-read': moment().format('YYYY-MM-DDTHH:mm') }
+    const patch: Record<string, unknown> = { position: this.loc.cfi, progress: fraction, 'last-read': moment().format('YYYY-MM-DDTHH:mm'), ...(props.started ? {} : { started: moment().format('YYYY-MM-DD') }) }
     if (fraction >= 0.995 && props.status !== 'finished') {
       patch.status = 'finished'
       patch.finished = moment().format('YYYY-MM-DD')
@@ -568,12 +575,17 @@ export class EpubView extends FileView {
   private activity() {
     this.awake?.poke()
     this.clock.tick()
+    if (this.clock.pastMidnight) void this.logSession(true)
   }
 
-  private async logSession() {
+  /** `goOn`: past midnight, log the day so far and keep timing the new day. */
+  private async logSession(goOn = false) {
     if (!this.file || !this.clock.running) return
+    const day = this.clock.day
     const minutes = this.clock.stop()
-    await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to: this.loc?.fraction ?? this.session.from, highlights: this.session.highlights })
+    const to = this.loc?.fraction ?? this.session.from
+    await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to, highlights: this.session.highlights, day })
+    if (goOn && this.ready) { this.session = { from: to, highlights: 0 }; this.clock.start() }
     await this.plugin.saveSettings()
   }
 
@@ -605,7 +617,13 @@ export class EpubView extends FileView {
     const pending = [...this.highlights.values()].filter(h => !h.anchor.cfi)
     if (!pending.length || !doc.body) return
     const idx = indexText(doc.body)
+    const flat = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
+    const sectionText = flat(idx.text)
     for (const h of pending) {
+      // a short imported quote ("I don't know.") can be in many chapters: when the import names its chapter and this
+      // section does not have that title, it is shown here but not saved, so a later visit to the right chapter can still place it
+      const chapter = (h.label ?? '').split(' · ').map(x => x.trim()).find(x => x && !/^(p\.|page|location|loc\.)\s/i.test(x))
+      const unsure = h.anchor.quote.exact.length < 60 && !!chapter && chapter.length >= 3 && !sectionText.includes(flat(chapter))
       const m = findQuote(idx.text, h.anchor.quote)
       if (!m) continue
       const range = rangeFromOffsets(idx, m.start, m.end)
@@ -613,7 +631,7 @@ export class EpubView extends FileView {
       const cfi = this.foliate!.getCFI(index, range)
       const upgraded: Highlight = { ...h, anchor: { ...h.anchor, cfi } }
       this.highlights.set(h.id, { ...h, anchor: upgraded.anchor })
-      if (this.file && this.note) await this.plugin.library.saveHighlight(this.file, this.note, upgraded)
+      if (this.file && this.note && !unsure) await this.plugin.library.saveHighlight(this.file, this.note, upgraded)
       await this.foliate!.addAnnotation({ value: cfi, color: h.color, style: h.style, id: h.id })
     }
   }
@@ -701,28 +719,33 @@ export class EpubView extends FileView {
     if (!book || !this.foliate) return
     let pv: View | null = null
     let at: { cfi?: string; label?: string } = {}
+    let atV = -1 // the slider value `at` belongs to
     this.peek.open({
       min: 0, max: 1000, value: Math.round((this.loc?.fraction ?? 0) * 1000),
       label: v => `${Math.round(v / 10)}%`,
       show: async (v, host) => {
         if (!pv) {
-          pv = createEl(tag('foliate-view'))
-          pv.addClass('octavo-peek-view')
-          host.replaceChildren(pv)
-          pv.addEventListener('relocate', e => { at = { cfi: e.detail.cfi, label: e.detail.tocItem?.label?.trim() } })
-          await pv.open(book)
-          const r = pv.renderer
+          const view = pv = createEl(tag('foliate-view'))
+          view.addClass('octavo-peek-view')
+          host.replaceChildren(view)
+          view.addEventListener('relocate', e => { at = { cfi: e.detail.cfi, label: e.detail.tocItem?.label?.trim() } })
+          await view.open(book)
+          if (pv !== view) return '' // closed while the book opened
+          const r = view.renderer
           r.setAttribute('no-preload', '')
           r.setAttribute('flow', 'paginated'); r.setAttribute('max-column-count', '1')
           r.setAttribute('margin-top', '18px'); r.setAttribute('margin-bottom', '18px')
           r.setStyles?.(this.lastCss?.css ?? '')
         }
+        atV = -1
         await pv.goToFraction(v / 1000)
+        atV = v
         return at.label ?? ''
       },
       go: v => {
         const from = this.loc?.cfi
-        void (at.cfi ? this.foliate!.goTo(at.cfi) : this.foliate!.goToFraction(v / 1000))
+        // the preview's exact place only when it shows this slider value; mid-drag it may still show the last one
+        void (at.cfi && atV === v ? this.foliate!.goTo(at.cfi) : this.foliate!.goToFraction(v / 1000))
         if (from) this.offerBack(from)
       },
       dispose: () => { try { pv?.close() } catch { /* ignore */ } pv?.remove(); pv = null },
@@ -876,8 +899,11 @@ export class EpubView extends FileView {
 
   private offerBack(cfi: string) {
     this.chrome.showBack('Back to where you were', () => void this.foliate!.goTo(cfi))
-    window.setTimeout(() => this.chrome.hideBack(), 15000)
+    // a newer jump gets its full 15 seconds
+    window.clearTimeout(this.backTimer)
+    this.backTimer = window.setTimeout(() => this.chrome.hideBack(), 15000)
   }
+  private backTimer = 0
 
   // ───────────────────────── backlinks ─────────────────────────
 
@@ -927,7 +953,7 @@ export class EpubView extends FileView {
 
   private async toggleSpeak() {
     if (this.speaker?.active) { this.speaker.stop(); this.chrome.setSpeaking(false); return }
-    await this.foliate!.initTTS('word', undefined, (range: Range) => {
+    const highlight = (range: Range) => {
       // highlight the spoken word and keep it on screen; the reading ruler follows the line
       void this.foliate!.renderer.scrollToAnchor?.(range, true)
       window.setTimeout(() => {
@@ -935,11 +961,13 @@ export class EpubView extends FileView {
         const r = range.getBoundingClientRect()
         if (fr && r.height) this.ruler.follow(fr.top + r.top, fr.top + r.bottom)
       }, 80)
-    })
+    }
+    await this.foliate!.initTTS('word', undefined, highlight)
     const t = this.plugin.settings.tts
     this.speaker = t.engine === 'cloud' && this.plugin.cloud.signedIn
       ? new CloudSpeaker(this.foliate, (text, sig) => this.plugin.cloud.tts(text, t.cloudVoice, sig), t.rate, () => this.chrome.setSpeaking(false), e => new Notice(`Read-aloud: ${e.message}`))
       : new Speaker(this.foliate, t, () => this.chrome.setSpeaking(false))
+    this.speaker.highlight = highlight
     this.chrome.setSpeaking(true)
     this.speaker.start()
     if (this.file && this.speaker instanceof Speaker) void maybeCloudPrompt(this.plugin, this.root, 'voice', this.file, this.bookId, { systemVoice: true })

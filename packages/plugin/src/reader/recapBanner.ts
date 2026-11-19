@@ -11,7 +11,7 @@ export function offerRecap(root: HTMLElement, o: { afterDays: number; lastRead: 
   if (!Number.isFinite(away) || away < o.afterDays) return
   const bar = el('div', 'octavo-cloud-banner octavo-recap-banner', root)
   bar.addEventListener('click', e => e.stopPropagation())
-  el('span', '', bar, `Welcome back. It has been ${away} days.`)
+  el('span', '', bar, `Welcome back. It has been ${away} ${away === 1 ? 'day' : 'days'}.`)
   const go = el('button', 'mod-cta', bar, 'Story so far')
   go.onclick = e => { e.stopPropagation(); bar.remove(); o.run() }
   iconButton(bar, 'x', 'Dismiss', () => bar.remove())

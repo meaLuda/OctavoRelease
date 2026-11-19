@@ -381,6 +381,7 @@ export class SystemEngine implements SpeechEngine {
   constructor(private voice: () => SpeechSynthesisVoice | undefined, private volume = 1) {}
   speak(text: string, rate: number, onEnd: () => void, onError: (e: Error) => void) {
     this.cancel()
+    if (typeof speechSynthesis === 'undefined') { onError(new Error('System voices are not available on this device')); return }
     const u = new SpeechSynthesisUtterance(text)
     u.rate = rate
     u.volume = this.volume
@@ -396,7 +397,7 @@ export class SystemEngine implements SpeechEngine {
     this.u = u // keep a reference: Chrome drops events of garbage-collected utterances
     speechSynthesis.speak(u)
   }
-  cancel() { this.u = null; speechSynthesis.cancel() }
+  cancel() { this.u = null; if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel() }
   dispose() { this.cancel() }
 }
 

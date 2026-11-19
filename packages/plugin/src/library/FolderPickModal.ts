@@ -29,8 +29,10 @@ export class FolderPickModal extends Modal {
     FolderPickModal.current = this
     const lib = this.plugin.settings.library
     const counts = folderCounts(this.app.vault.getFiles().filter(isBookFile).map(f => f.path))
-    const chosen = new Set(lib.folders.length ? lib.folders.map(f => counts.find(c => c.folder === f || f.startsWith(c.folder + '/'))?.folder ?? f)
-      : preselectFolders(counts, this.plugin.settings.booksFolder))
+    // a saved folder deeper than the rows shown ("Books/Fiction/SciFi" under "Books/Fiction") is kept as it is,
+    // not widened to its row; ticking that row takes the whole folder instead
+    const deep = new Set(lib.folders.filter(f => !counts.some(c => c.folder === f) && counts.some(c => f.startsWith(c.folder + '/'))))
+    const chosen = new Set(lib.folders.length ? lib.folders.filter(f => !deep.has(f)) : preselectFolders(counts, this.plugin.settings.booksFolder))
     let whole = lib.foldersAsked === true && !lib.folders.length
 
     this.modalEl.addClass('octavo-folder-pick')
@@ -43,10 +45,13 @@ export class FolderPickModal extends Modal {
       .addToggle(t => t.setValue(whole).onChange(v => { whole = v; for (const x of toggles) x.setDisabled(v) }))
     const list = c.createDiv({ cls: 'octavo-folder-pick-list' })
     for (const { folder, count } of counts) {
-      new Setting(list).setName(folder).setDesc(`${count} book${count === 1 ? '' : 's'}`)
+      const inside = [...deep].filter(f => f.startsWith(folder + '/'))
+      new Setting(list).setName(folder).setDesc(`${count} book${count === 1 ? '' : 's'}${inside.length ? ` · now only ${inside.join(', ')}` : ''}`)
         .addToggle(t => {
           toggles.push(t)
-          t.setValue(chosen.has(folder)).setDisabled(whole).onChange(v => { if (v) chosen.add(folder); else chosen.delete(folder) })
+          t.setValue(chosen.has(folder)).setDisabled(whole).onChange(v => {
+            if (v) { chosen.add(folder); for (const f of inside) deep.delete(f) } else { chosen.delete(folder); for (const f of inside) deep.add(f) }
+          })
         })
     }
     for (const f of lib.folders) if (!counts.some(c2 => c2.folder === f || f.startsWith(c2.folder + '/'))) chosen.add(f) // keep chosen folders with no books yet
@@ -55,7 +60,7 @@ export class FolderPickModal extends Modal {
     new Setting(c)
       .addButton(b => b.setButtonText('Not now').onClick(() => this.close()))
       .addButton(b => b.setButtonText('Show these').setCta().onClick(async () => {
-        lib.folders = whole ? [] : foldersToSave([...chosen])
+        lib.folders = whole ? [] : foldersToSave([...chosen, ...deep])
         this.saved = true
         this.close()
       }))

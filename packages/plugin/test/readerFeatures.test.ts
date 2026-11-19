@@ -77,7 +77,9 @@ describe('quote cards', () => {
   it('wraps to the width, a long word gets its own line', () => {
     const m = (s: string) => s.length
     expect(wrapLines(m, 'one two three four', 9)).toEqual(['one two', 'three', 'four'])
-    expect(wrapLines(m, 'extraordinarily x', 5)).toEqual(['extraordinarily', 'x'])
+    // a word wider than the line is broken by character instead of running off the card
+    expect(wrapLines(m, 'extraordinarily x', 5)).toEqual(['extra', 'ordin', 'arily', 'x'])
+    expect(wrapLines(m, 'ab 吾輩は猫である', 4)).toEqual(['ab 吾', '輩は猫で', 'ある'])
     expect(wrapLines(m, 'a\nb', 10)).toEqual(['a', 'b'])
   })
   it('tidies and shortens the text at a word', () => {

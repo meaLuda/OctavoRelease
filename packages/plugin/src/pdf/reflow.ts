@@ -40,8 +40,11 @@ export function toLines(items: RawItem[]): Line[] {
 
 export function reflow(items: RawItem[]): Block[] {
   let lines = toLines(items)
-  // drop page numbers / lone running numbers at the very top or bottom
-  lines = lines.filter((l, i) => !((i === 0 || i === lines.length - 1) && /^[\divxlcIVXLC\s.\-–—]{1,8}$/.test(l.text)))
+  // drop page numbers / lone running numbers at the very top or bottom: digits or lower-case roman numerals at
+  // body size or smaller. "XIV" or "Civil" set large above the text is a chapter heading, not a page number.
+  const size0 = median(lines.map(l => l.size))
+  const pageNo = (l: Line) => l.size <= size0 + 0.5 && (/^[\d\s.\-–—]{1,8}$/.test(l.text) || /^[-–— ]*[ivxlc]{1,7}[-–— ]*$/.test(l.text) || (l.size < size0 - 0.5 && /^[IVXLC]{1,7}$/.test(l.text)))
+  lines = lines.filter((l, i) => !((i === 0 || i === lines.length - 1) && pageNo(l)))
   if (!lines.length) return []
   const bodySize = median(lines.map(l => l.size))
   const gaps = lines.slice(1).map((l, i) => lines[i].y - l.y).filter(g => g > 0 && g < bodySize * 4)

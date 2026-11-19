@@ -30,7 +30,7 @@ import { reflow, figureBands, continues } from './reflow'
 import { AreaSelect, type AreaPick } from './areaSelect'
 import { scrollStep, autoScrollAction, decideAxis, wheelLock, type Axis, type AxisGesture } from './autoScroll'
 import { viewportToPdfRect, pdfRectToViewport, footerPage, pageRef, pageLabel, hasOwnLabel, resolvePageInput, type PdfRect } from './region'
-import { renderRegion } from './regionRender'
+import { releaseCanvas, renderRegion } from './regionRender'
 import type { PDFDocumentProxy, PDFPageProxy, PDFViewer, EventBus, PageViewport, TextItem, TextMarkedContent, PdfjsLibModule, PdfjsViewerModule } from './pdfjs'
 import {
   resolveLayout, pruneLayouts, turnFor, clampZoom, effectiveFit, useSpread, inkBox, cropBox, isBleed, sameSize, widen, outside, fitScale, cropScrollLeft, focalScroll, blockZoom, columnAt, joinCopiedLines,
@@ -55,6 +55,8 @@ interface PageView {
   canvas?: HTMLCanvasElement | null
   scale: number
   viewport: PageViewport
+  /** pdf.js RenderingStates: 0 initial, 1 running, 2 paused, 3 finished */
+  renderingState?: number
   textLayer?: { textLayer?: { textDivs?: HTMLElement[]; textContentItemsStr?: string[]; textContentItems?: (TextItem | TextMarkedContent)[] } | null } | null
 }
 type Viewer = Omit<PDFViewer, 'getPageView' | 'setDocument'> & { getPageView(index: number): PageView | undefined; setDocument(doc: PDFDocumentProxy | null): void }
@@ -188,13 +190,21 @@ export class PdfView extends FileView {
     this.area = new AreaSelect(this.root, this.container, p => this.onAreaPicked(p), on => { if (on) { this.popover.hide(); this.chrome.hide() } })
     this.container.addEventListener('scroll', () => this.chrome.hide(), { passive: true })
     this.root.addEventListener('keydown', e => this.onKey(e))
-    this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel()) this.popover.hide() })
+    // On iPhone and iPad the PDF's text is in the same page as the menu, so a tap on a menu button clears the selection
+    // before the tap lands: keep the menu up while a finger or pointer is on it (the action uses menuRange)
+    let inMenu = false
+    this.popover.el.addEventListener('pointerdown', () => { inMenu = true }, true)
+    for (const ev of ['click', 'pointercancel'] as const) this.popover.el.addEventListener(ev, () => window.setTimeout(() => { inMenu = false }, 0), true)
+    this.registerDomEvent(this.containerEl.doc, 'pointerup', () => window.setTimeout(() => { inMenu = false }, 400))
+    this.registerDomEvent(this.containerEl.doc, 'selectionchange', () => { if (!this.hasSel() && !inMenu) { this.popover.hide(); this.menuRange = null } })
     this.registerDomEvent(this.containerEl.doc, 'visibilitychange', () => { if (this.containerEl.doc.hidden) { this.clock.pause(); this.stopAutoScroll(); void this.savePosition() } else { this.clock.resume(); this.awake.onVisible() } })
     // auto-scroll holds while a finger or button is down (touch, click, selecting text)
     this.root.addEventListener('pointerdown', () => { this.pointerHeld = true })
     this.registerDomEvent(this.containerEl.doc, 'pointerup', () => { this.pointerHeld = false })
     this.registerDomEvent(this.containerEl.doc, 'pointercancel', () => { this.pointerHeld = false })
     this.registerEvent(this.app.workspace.on('css-change', () => this.applyLook()))
+    // night light warms gradually from 19:00 to 21:00 (and fades 06:00 to 07:00): follow the clock while reading
+    this.registerInterval(window.setInterval(() => { if (this.plugin.settings.nightLight) this.applyLook() }, 10 * 60_000))
     this.registerEvent(this.app.metadataCache.on('resolved', () => this.refreshBacklinks()))
     this.registerEvent(this.app.vault.on('modify', f => { if (f === this.note) void this.loadHighlights() }))
     this.registerEvent(this.app.workspace.on('active-leaf-change', l => { if (l !== this.leaf) this.containerEl.doc.body.removeClass('octavo-immersive') }))
@@ -208,6 +218,8 @@ export class PdfView extends FileView {
     await this.plugin.ready
     if (this.handOff(file)) return
     this.ready = false
+    // a previous file's "Could not open" message goes with it
+    this.root.querySelectorAll(':scope > .octavo-loading').forEach(e => e.remove())
     const loading = el('div', 'octavo-loading', this.root, 'Opening…')
     try {
       const { lib, viewer } = await ensurePdfjs(loadPdfJs)
@@ -790,6 +802,9 @@ export class PdfView extends FileView {
   }
 
   private async closeDoc() {
+    // "Back to page 37" belongs to this book, not the next one opened in this tab
+    window.clearTimeout(this.backTimer)
+    this.chrome?.hideBack()
     // a save still waiting from a page turn must not land in the next book's note
     window.clearTimeout(this.saveTimer)
     this.stopAutoScroll()
@@ -835,6 +850,9 @@ export class PdfView extends FileView {
     super.setEphemeralState?.(state)
     const sub = (state as { subpath?: unknown } | null)?.subpath
     if (typeof sub !== 'string' || !sub) return
+    // a link Octavo cannot use (#page=iv, a heading) opens the book where you left off, and says so
+    const sp = parseSubpath(sub)
+    if (!sp || sp.type === 'cfi') { new Notice('Octavo could not find that place in the book, so it opened where you left off.'); return }
     if (!this.ready || !this.viewer?.pagesCount) { this.pendingSubpath = sub; return }
     void this.navigateSubpath(sub)
   }
@@ -842,11 +860,14 @@ export class PdfView extends FileView {
   private async navigateSubpath(sub: string) {
     const sp = parseSubpath(sub)
     if (!sp || sp.type === 'cfi') return
-    const page = sp.type === 'selection' ? sp.selection.page : sp.page
+    const page = Math.min(this.doc?.numPages ?? 1, Math.max(1, sp.type === 'selection' ? sp.selection.page : sp.page))
     const from = this.page
     this.goToPage(page)
-    if (sp.type === 'selection') this.whenTextLayer(page, () => this.flashSelection(sp.selection))
-    if (sp.type === 'rect') this.whenTextLayer(page, () => this.flashRect(page, sp.rect))
+    if (this.mode !== 'text') {
+      if (sp.type === 'selection') this.whenTextLayer(page, () => this.flashSelection(sp.selection))
+      // an area needs only the drawn page, not its text (a scanned page has none)
+      if (sp.type === 'rect') this.whenRendered(page, () => this.flashRect(page, sp.rect))
+    }
     if (from !== page) this.offerBack(from)
   }
 
@@ -861,8 +882,27 @@ export class PdfView extends FileView {
   /** Run `fn` once page n's text layer exists (immediately if it already does). */
   private whenTextLayer(n: number, fn: () => void) {
     if (this.pageView(n)?.textLayer?.textLayer?.textDivs?.length) return fn()
-    const handler = ({ pageNumber }: { pageNumber: number }) => { if (pageNumber === n) { this.eventBus!.off('textlayerrendered', handler); window.setTimeout(fn, 30) } }
-    this.eventBus!.on('textlayerrendered', handler)
+    this.once('textlayerrendered', n, fn)
+  }
+
+  /** Run `fn` once page n is drawn (immediately if it is). */
+  private whenRendered(n: number, fn: () => void) {
+    if (this.pageView(n)?.renderingState === 3 /* FINISHED */) return fn()
+    this.once('pagerendered', n, fn)
+  }
+
+  /** One pdf.js event for page n, given up after 10 s: a stale wait must not jump the view later on. */
+  private once(event: string, n: number, fn: () => void) {
+    const bus = this.eventBus
+    if (!bus) return
+    let timer = 0
+    const handler = ({ pageNumber }: { pageNumber: number }) => {
+      if (pageNumber !== n) return
+      bus.off(event, handler); window.clearTimeout(timer)
+      window.setTimeout(() => { if (this.eventBus === bus) fn() }, 30)
+    }
+    bus.on(event, handler)
+    timer = window.setTimeout(() => bus.off(event, handler), 10_000)
   }
 
   // ───────────────────────── text layer, highlights ─────────────────────────
@@ -874,7 +914,8 @@ export class PdfView extends FileView {
     divs?.forEach((d, i) => (d.dataset.idx = String(i)))
     const strs = tl?.textContentItemsStr
     const items = tl?.textContentItems
-    if (strs) this.textCache.set(n, { items: [...strs], eol: strs.map((_, i) => !!items?.filter(isText)[i]?.hasEOL) })
+    const texts = items?.filter(isText) // once, not once per item: a page can have thousands
+    if (strs) this.textCache.set(n, { items: [...strs], eol: strs.map((_, i) => !!texts?.[i]?.hasEOL) })
     this.drawHighlights(n)
     this.tts?.onTextLayer(n)
   }
@@ -883,7 +924,11 @@ export class PdfView extends FileView {
     const cached = this.textCache.get(n)
     if (cached) return cached
     const page = await this.doc!.getPage(n)
-    const textItems = (await page.getTextContent()).items.filter(isText)
+    // the same text as the page's text layer (which skips normalisation), so item offsets mean the same in both
+    const textItems = (await page.getTextContent({ disableNormalization: true })).items.filter(isText)
+    // the text layer may have filled the cache meanwhile: keep its copy, the one the page's DOM offsets refer to
+    const now = this.textCache.get(n)
+    if (now) return now
     const v = { items: textItems.map(it => it.str), eol: textItems.map(it => !!it.hasEOL) }
     this.textCache.set(n, v)
     return v
@@ -967,9 +1012,13 @@ export class PdfView extends FileView {
     return !!s && !s.isCollapsed && this.container.contains(s.anchorNode) && s.toString().trim().length > 0
   }
 
+  /** The selection the menu was opened for: on iPhone and iPad, tapping a menu button clears the live selection first. */
+  private menuRange: Range | null = null
+
   private checkSelection() {
     if (!this.hasSel()) return
     const range = this.containerEl.doc.getSelection()!.getRangeAt(0)
+    this.menuRange = range.cloneRange()
     this.popover.show(range.getBoundingClientRect(), {
       color: c => void this.createHighlight(c, 'highlight'),
       underline: () => void this.createHighlight(this.plugin.settings.defaultColor, 'underline'),
@@ -1013,12 +1062,16 @@ export class PdfView extends FileView {
     const doc = this.doc
     if (!doc) return
     let task: { cancel(): void } | null = null
+    let seq = 0
     this.peek.open({
       min: 1, max: doc.numPages, value: this.page,
       label: v => `Page ${pageLabel(this.labels, v)} of ${doc.numPages}`,
       show: async (v, host) => {
         task?.cancel()
+        // only the latest scrub may land: an earlier, slower page must not replace it
+        const mine = ++seq
         const page = await doc.getPage(v)
+        if (mine !== seq) return
         const one = page.getViewport({ scale: 1 })
         const scale = Math.min((host.clientWidth || 320) / one.width, (host.clientHeight || 420) / one.height) * (window.devicePixelRatio || 1)
         const vp = page.getViewport({ scale })
@@ -1026,12 +1079,15 @@ export class PdfView extends FileView {
         c.width = Math.floor(vp.width); c.height = Math.floor(vp.height)
         const t = page.render({ canvasContext: c.getContext('2d')!, viewport: vp })
         task = t
-        try { await t.promise } catch { return }
+        // canvases are freed when dropped (iOS caps canvas memory; long scrubs made dozens)
+        try { await t.promise } catch { releaseCanvas(c); return }
+        if (mine !== seq) { releaseCanvas(c); return }
+        host.querySelectorAll('canvas').forEach(releaseCanvas)
         host.replaceChildren(c)
         return this.chapterOf(v)?.title ?? ''
       },
       go: v => { const from = this.page; this.goToPage(v); if (from !== v) this.offerBack(from) },
-      dispose: () => task?.cancel(),
+      dispose: () => { seq++; task?.cancel() },
     })
   }
 
@@ -1102,8 +1158,9 @@ export class PdfView extends FileView {
   /** DOM selection → PDF++ selection (text-layer item index + char offset, both ends). */
   private selectionToPdf(): { sel: PdfSelection; text: string } | null {
     const ds = this.containerEl.doc.getSelection()
-    if (!ds || ds.isCollapsed) return null
-    const r = ds.getRangeAt(0)
+    const live = ds && !ds.isCollapsed ? ds.getRangeAt(0) : null
+    const r = live ?? (this.menuRange?.startContainer.isConnected && !this.menuRange.collapsed ? this.menuRange : null)
+    if (!r) return null
     const page = this.pageOf(r.startContainer)
     if (!page) return null
     const pos = (node: Node, off: number): [number, number] | null => {
@@ -1114,14 +1171,24 @@ export class PdfView extends FileView {
       for (let t = walker.nextNode(); t; t = walker.nextNode()) { if (t === node) return [Number(span.dataset.idx), o + off]; o += (t as Text).data.length }
       return [Number(span.dataset.idx), node.nodeType === 1 ? (off > 0 ? span.textContent?.length ?? 0 : 0) : off]
     }
-    const a = pos(r.startContainer, r.startOffset)
-    let b = pos(r.endContainer, r.endOffset)
+    // a selection edge on a line break or a wrapper (triple-click, a drag past the line end) is in no item:
+    // take the nearest item inside the selection, not the end of the page
+    const near = (node: Node, off: number, forward: boolean): [number, number] | null => {
+      const layer = (node.nodeType === 1 ? node as Element : node.parentElement)?.closest('.textLayer')
+      if (!layer) return null
+      const at = this.containerEl.doc.createRange(); at.setStart(node, off); at.collapse(true)
+      const spans = Array.from(layer.querySelectorAll<HTMLElement>('[data-idx]'))
+      const s = forward ? spans.find(x => at.comparePoint(x, 0) >= 0) : spans.filter(x => at.comparePoint(x, x.childNodes.length) <= 0).at(-1)
+      return s ? [Number(s.dataset.idx), forward ? 0 : s.textContent?.length ?? 0] : null
+    }
+    const a = pos(r.startContainer, r.startOffset) ?? near(r.startContainer, r.startOffset, true)
+    let b = pos(r.endContainer, r.endOffset) ?? near(r.endContainer, r.endOffset, false)
     if (!a) return null
     if (!b || this.pageOf(r.endContainer) !== page) {
       const items = this.textCache.get(page)?.items ?? []
       b = [Math.max(0, items.length - 1), items.at(-1)?.length ?? 0]
     }
-    return { sel: { page, beginIndex: a[0], beginOffset: a[1], endIndex: b[0], endOffset: b[1] }, text: ds.toString() }
+    return { sel: { page, beginIndex: a[0], beginOffset: a[1], endIndex: b[0], endOffset: b[1] }, text: r.toString() }
   }
 
   private async quoteOn(sel: PdfSelection) {
@@ -1243,6 +1310,11 @@ export class PdfView extends FileView {
   private anchorQuote(n: number, h: ParsedHighlight): PdfSelection | null {
     const p = this.textCache.get(n)
     if (!p) return null
+    // a short quote ("I don't know.") can appear on many pages: with a known page ("p. 12" from Zotero, KOReader) it is
+    // only placed near it, so the first page that happens to load does not claim it for good. Near, not on: a printed
+    // page number is often behind the PDF's own by the front matter.
+    const labelled = Number(pageFromLabel(h.label))
+    if (Number.isInteger(labelled) && labelled > 0 && h.anchor.quote.exact.length < 60 && (n < labelled || n > labelled + 40)) return null
     const { text, starts } = this.pageString(p)
     const m = findQuote(text, h.anchor.quote)
     if (!m) return null
@@ -1577,9 +1649,13 @@ export class PdfView extends FileView {
     this.textScrollTimer = window.setTimeout(() => {
       const top = this.textView.scrollTop + this.textView.clientHeight * 0.3
       let p = this.page
-      for (const sec of Array.from(this.textView.querySelectorAll<HTMLElement>('.octavo-reflow-page'))) {
+      const secs = Array.from(this.textView.querySelectorAll<HTMLElement>('.octavo-reflow-page'))
+      for (const sec of secs) {
         if (sec.offsetTop <= top) p = Number(sec.dataset.page); else break
       }
+      // scrolled to the end: a short last page never reaches the 30% line, but it is the page being read
+      const v = this.textView
+      if (secs.length && v.scrollTop + v.clientHeight >= v.scrollHeight - 2) p = Number(secs.at(-1)!.dataset.page)
       if (p !== this.page) {
         this.page = p
         this.updateFooter()
@@ -1630,8 +1706,11 @@ export class PdfView extends FileView {
     const props = this.plugin.library.getProps(this.note)
     const progress = Math.round(this.fraction() * 1000) / 1000
     if (props.page === this.page && props.progress === progress) return
-    const patch: Record<string, unknown> = { page: this.page, progress, 'last-read': moment().format('YYYY-MM-DDTHH:mm') }
-    if (this.page === this.doc.numPages && props.status !== 'finished') { patch.status = 'finished'; patch.finished = moment().format('YYYY-MM-DD') }
+    const patch: Record<string, unknown> = { page: this.page, progress, 'last-read': moment().format('YYYY-MM-DDTHH:mm'), ...(props.started ? {} : { started: moment().format('YYYY-MM-DD') }) }
+    // in a two-page spread (1, 2|3, 4|5 …) the current page is the left one: the last spread shows the last page too
+    const n = this.doc.numPages
+    const lastShown = this.root.hasClass('is-spread') && !this.root.hasClass('is-textview') && this.page % 2 === 0 ? Math.min(this.page + 1, n) : this.page
+    if (lastShown === n && props.status !== 'finished') { patch.status = 'finished'; patch.finished = moment().format('YYYY-MM-DD'); patch.progress = 1 }
     await this.plugin.library.setProps(this.note, patch)
   }
 
@@ -1639,19 +1718,27 @@ export class PdfView extends FileView {
   private activity() {
     this.awake?.poke()
     this.clock.tick()
+    if (this.clock.pastMidnight) void this.logSession(true)
   }
 
-  private async logSession() {
+  /** `goOn`: past midnight, log the day so far and keep timing the new day. */
+  private async logSession(goOn = false) {
     if (!this.file || !this.clock.running) return
+    const day = this.clock.day
     const minutes = this.clock.stop()
-    await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to: this.fraction(), highlights: this.session.highlights })
+    const to = this.fraction()
+    await this.plugin.library.logSession({ book: this.file, note: this.note, title: this.title, minutes, from: this.session.from, to, highlights: this.session.highlights, day })
+    if (goOn && this.ready) { this.session = { from: to, highlights: 0 }; this.clock.start() }
     await this.plugin.saveSettings()
   }
 
   private offerBack(page: number) {
     this.chrome.showBack(`Back to page ${page}`, () => this.goToPage(page))
-    window.setTimeout(() => this.chrome.hideBack(), 15000)
+    // a newer jump gets its full 15 seconds
+    window.clearTimeout(this.backTimer)
+    this.backTimer = window.setTimeout(() => this.chrome.hideBack(), 15000)
   }
+  private backTimer = 0
 
   private async loadOutline() {
     this.outline = []

@@ -1,5 +1,6 @@
 import { loadPdfJs, Platform, type App, type TFile } from 'obsidian'
-import { openPdfDocument } from './source'
+import { openPdfDocument, PDF_ASSETS } from './source'
+import { STUB_MAX } from '../cloud/stub'
 import { imageCoverage } from './geometry'
 import { pdfRectToViewport, regionPlan, regionLimits, isDestroyedDocError, itemRect, type PdfRect } from './region'
 import { recolourScan, type ScanColors } from './scanDark'
@@ -26,7 +27,8 @@ interface DocEntry { key: string; doc: Promise<PDFDocumentProxy>; users: number;
 export class PdfDocCache {
   private docs = new Map<string, DocEntry>()
   private scanned = new Map<string, boolean>()
-  constructor(private app: App, private max = 3) {}
+  /** `cloud` gives a Cloud book's bytes when `file` is only its placeholder (moved to Octavo Cloud). */
+  constructor(private app: App, private max = 3, private cloud?: (file: TFile) => Promise<Blob | null>) {}
 
   private acquire(file: TFile): DocEntry {
     const key = `${file.path}:${file.stat.mtime}`
@@ -36,6 +38,9 @@ export class PdfDocCache {
       if (hit) this.drop(file.path)
       const doc = (async () => {
         const lib = await loadPdfJs() as PdfjsLibModule
+        // a book moved to Octavo Cloud: the file in the vault is a small placeholder, its embeds come from the Cloud copy
+        const remote = this.cloud && file.stat.size <= STUB_MAX ? await this.cloud(file).catch(() => null) : null
+        if (remote) return lib.getDocument({ ...PDF_ASSETS, data: new Uint8Array(await remote.arrayBuffer()), isEvalSupported: false }).promise
         return openPdfDocument(lib, this.app.vault.getResourcePath(file), file.stat.size, async () => new Uint8Array(await this.app.vault.readBinary(file)))
       })()
       e = { key, doc, users: 0, dropped: false }
@@ -157,7 +162,7 @@ export async function renderRegion(page: PDFPageProxy, rect: readonly number[] |
 
 /** PDF++ selection (textDiv indices + offsets) → PDF rects for preview marks, from the page's text content. */
 export async function selectionMarks(page: PDFPageProxy, sel: { beginIndex: number; beginOffset: number; endIndex: number; endOffset: number }, color: string): Promise<Mark[]> {
-  const items = (await page.getTextContent()).items.filter((it): it is TextItem => 'str' in it)
+  const items = (await page.getTextContent({ disableNormalization: true })).items.filter((it): it is TextItem => 'str' in it) // as the text layer the anchors came from
   const out: Mark[] = []
   for (let i = sel.beginIndex; i <= sel.endIndex && i < items.length; i++) {
     const it = items[i]

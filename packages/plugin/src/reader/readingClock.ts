@@ -10,11 +10,18 @@ export class ReadingClock {
   private last = 0
   private paused = false
   private ms = 0
+  /** Local YYYY-MM-DD the clock started on: time read past midnight is logged on the next day. */
+  day = ''
   constructor(private now: () => number = Date.now) {}
+
+  private static dayOf(t: number) { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+
+  /** Running since before midnight: log what was read (stop) and start again for the new day. */
+  get pastMidnight(): boolean { return this.on && this.day !== ReadingClock.dayOf(this.now()) }
 
   get running(): boolean { return this.on }
 
-  start(): void { this.on = true; this.last = this.now(); this.ms = 0; this.paused = false }
+  start(): void { this.on = true; this.last = this.now(); this.day = ReadingClock.dayOf(this.last); this.ms = 0; this.paused = false }
 
   /** Call on page turns, taps, keys and scrolls. */
   tick(): void {

@@ -107,8 +107,15 @@ function highlightVars(x: ExportHighlight, base: TemplateVars): TemplateVars {
     label: h.label ?? '',
     page: h.anchor.pdf?.page ?? pageFromLabel(h.label) ?? '',
     link: x.link,
-    date: h.created.slice(0, 10),
+    date: localDay(h.created),
   }
+}
+
+/** The day a highlight was made, on the reader's own clock (the stored time is UTC). */
+function localDay(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 /** The generated block, markers included. */
@@ -140,7 +147,10 @@ export function buildLiteratureNote(input: LiteratureInput): string {
   const vars: TemplateVars = { book: input.book, author: input.author ?? '', citekey: input.citekey ?? '', source: input.source, date: input.date }
   const block = renderHighlightsBlock(input)
   const fm = /^---\n[\s\S]*?\n---(?:\n|$)/.exec(tpl)?.[0] ?? ''
-  const head = withBookId(fm ? renderTemplate(fm, vars, { escape: yamlScalar }) : '', input.bookId)
+  // values are quoted as needed: a placeholder the template already quotes ("{{book}}") is unquoted first, or
+  // "Dune: Messiah" would become ""Dune: Messiah"", which is not valid YAML
+  const unquoted = fm.replace(/(["'])(\{\{\s*\w+\s*\}\})\1/g, '$2')
+  const head = withBookId(fm ? renderTemplate(unquoted, vars, { escape: yamlScalar }) : '', input.bookId)
   let body = renderTemplate(tpl.slice(fm.length), { ...vars, highlights: '\u0000' })
   // a function replacer: `$$x^2$$` or `$'` in a highlight must be inserted literally, not as replacement patterns
   body = body.includes('\u0000') ? body.replace('\u0000', () => block) : `${body.replace(/\s+$/, '')}${body.trim() ? '\n\n' : ''}${block}\n`

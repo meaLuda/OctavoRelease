@@ -83,9 +83,11 @@ export class CollectionModal extends Modal {
 /** Shows markdown (AI answers, definitions) with optional actions. */
 export class MarkdownModal extends Modal {
   private comp = new Component()
+  private closed = false
   constructor(app: App, private heading: string, private markdown: string, private actions: Array<{ label: string; cta?: boolean; run: () => void }> = []) { super(app) }
   onOpen() {
     this.setTitle(this.heading)
+    this.comp = new Component()
     this.comp.load()
     const body = this.contentEl.createDiv({ cls: 'octavo-md-modal' })
     void MarkdownRenderer.render(this.app, this.markdown, body, '', this.comp)
@@ -94,8 +96,16 @@ export class MarkdownModal extends Modal {
       for (const a of this.actions) s.addButton(b => { b.setButtonText(a.label).onClick(() => { a.run(); this.close() }); if (a.cta) b.setCta() })
     }
   }
-  setMarkdown(md: string) { this.markdown = md; this.contentEl.empty(); this.onOpen() }
-  onClose() { this.comp.unload(); this.contentEl.empty() }
+  /** Replace the text (each streamed piece of an answer). False once closed, which stops the stream. */
+  setMarkdown(md: string): boolean {
+    if (this.closed) return false
+    this.markdown = md
+    this.comp.unload()
+    this.contentEl.empty()
+    this.onOpen()
+    return true
+  }
+  onClose() { this.closed = true; this.comp.unload(); this.contentEl.empty() }
 }
 
 /** Every tag in the vault (without '#'), for autocomplete. */
