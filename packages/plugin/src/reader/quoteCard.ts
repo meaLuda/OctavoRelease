@@ -22,7 +22,7 @@ export function wrapLines(measure: (s: string) => number, text: string, width: n
     let line = ''
     const words = para.split(/\s+/).filter(Boolean)
     for (let wi = 0; wi < words.length; wi++) {
-      const word = words[wi]!
+      const word = words[wi]
       const next = line ? `${line} ${word}` : word
       if (measure(next) <= width) { line = next; continue }
       if (measure(word) > width || ANY_BREAK.test(word)) {
@@ -71,7 +71,7 @@ export function drawCard(canvas: HTMLCanvasElement, q: QuoteCardInput, style: Ca
   const room = Math.max(1, Math.floor(boxH / lh))
   if (lines.length > room) {
     lines = lines.slice(0, room)
-    let last = lines[room - 1]!.replace(/[”]$/, '')
+    let last = lines[room - 1].replace(/[”]$/, '')
     while (last && ctx.measureText(`${last}…”`).width > boxW) last = last.slice(0, -1)
     lines[room - 1] = `${last.trimEnd()}…”`
   }

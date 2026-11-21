@@ -64,9 +64,9 @@ export function appendUnderHeading(md: string, heading: string, block: string): 
   const at = lines.findIndex(l => l.trim() === `## ${heading}`)
   if (at < 0) return `${lines.join('\n')}\n\n## ${heading}\n\n${block}\n`
   let end = at + 1
-  while (end < lines.length && !/^#{1,2} /.test(lines[end]!)) end++
+  while (end < lines.length && !/^#{1,2} /.test(lines[end])) end++
   let ins = end
-  while (ins > at + 1 && !lines[ins - 1]!.trim()) ins--
+  while (ins > at + 1 && !lines[ins - 1].trim()) ins--
   lines.splice(ins, 0, '', block, ...(ins === end && end < lines.length ? [''] : []))
   return `${lines.join('\n')}\n`
 }

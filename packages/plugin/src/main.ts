@@ -137,7 +137,8 @@ export default class OctavoPlugin extends Plugin {
     this.applySettings(((await this.loadData()) ?? {}) as Partial<OctavoSettings>)
     this.settings.stats = mergeSyncedStats(mine.stats, this.settings.stats)
     this.settings.dailyHighlights.shown = { ...mine.dailyHighlights.shown, ...this.settings.dailyHighlights.shown }
-    const theirs = JSON.stringify(((await this.loadData()) ?? {}).stats ?? {})
+    const saved = ((await this.loadData()) ?? {}) as Partial<OctavoSettings>
+    const theirs = JSON.stringify(saved.stats ?? {})
     if (JSON.stringify(this.settings.stats) !== theirs) await this.saveSettings()
     else this.updateStatus()
     this.refreshReaders()

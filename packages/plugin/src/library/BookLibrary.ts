@@ -318,7 +318,8 @@ export class BookLibrary {
       // read from the file itself, not the metadata cache, so two quick saves cannot count one book twice
       finished = props.status === 'finished' && fm.status !== 'finished'
       // a book finished in an earlier year (an imported reading history) counts for that year
-      const when = String(props.finished ?? fm.finished ?? '')
+      const raw = props.finished ?? fm.finished
+      const when = typeof raw === 'string' || typeof raw === 'number' ? String(raw) : ''
       if (/^\d{4}/.test(when)) year = when.slice(0, 4)
       for (const [k, v] of Object.entries(props)) {
         if (v === undefined) delete fm[k]
